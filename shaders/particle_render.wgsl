@@ -66,5 +66,5 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         discard;
     }
     let fall = (1.0 - r2);
-    return vec4<f32>(ramp(in.speed) * fall * 0.35, 1.0);
+    return vec4<f32>(ramp(in.speed) * fall * 0.8, 1.0);
 }

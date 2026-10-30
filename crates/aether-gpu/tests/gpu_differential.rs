@@ -80,7 +80,10 @@ fn probe_reports_adapter() {
     assert!(!r.name.is_empty());
     assert!(r.limits.max_buffer_size > 0);
     assert!(r.limits.max_compute_invocations_per_workgroup >= 256);
-    eprintln!("adapter: {} / {} / {:?}", r.name, r.backend, r.optional_features);
+    eprintln!(
+        "adapter: {} / {} / {:?}",
+        r.name, r.backend, r.optional_features
+    );
     #[cfg(target_os = "macos")]
     assert_eq!(r.backend, "Metal");
 }
@@ -174,7 +177,10 @@ fn heat_conserves_energy_on_gpu_neumann() {
         Snapshot::Heat(g) => aether_core::heat::total_heat(&g),
         _ => unreachable!(),
     };
-    assert!((after - before).abs() / before < 1e-3, "{before} vs {after}");
+    assert!(
+        (after - before).abs() / before < 1e-3,
+        "{before} vs {after}"
+    );
 }
 
 #[test]
@@ -188,7 +194,14 @@ fn zero_steps_returns_initial_state() {
 fn step_batches_compose_on_gpu() {
     let ctx = gpu_or_skip!();
     let c = cfg(WorkloadKind::ParticlesLocal, 500, 7);
-    let mut w = GpuWorkload::new(ctx.clone(), ExperimentConfig { backend: BackendKind::Gpu, ..c.clone() }).unwrap();
+    let mut w = GpuWorkload::new(
+        ctx.clone(),
+        ExperimentConfig {
+            backend: BackendKind::Gpu,
+            ..c.clone()
+        },
+    )
+    .unwrap();
     w.step(3).unwrap();
     w.step(4).unwrap();
     assert_eq!(w.snapshot().unwrap(), gpu_run(&ctx, &c, 7));
@@ -204,7 +217,10 @@ fn gpu_is_repeatable() {
 #[test]
 fn initialize_resets_gpu_state() {
     let ctx = gpu_or_skip!();
-    let c = ExperimentConfig { backend: BackendKind::Gpu, ..cfg(WorkloadKind::Heat, 64, 10) };
+    let c = ExperimentConfig {
+        backend: BackendKind::Gpu,
+        ..cfg(WorkloadKind::Heat, 64, 10)
+    };
     let mut w = GpuWorkload::new(ctx, c).unwrap();
     let s0 = w.snapshot().unwrap();
     w.step(10).unwrap();
@@ -216,11 +232,16 @@ fn initialize_resets_gpu_state() {
 #[test]
 fn validate_via_trait() {
     let ctx = gpu_or_skip!();
-    let c = ExperimentConfig { backend: BackendKind::Gpu, ..cfg(WorkloadKind::Heat, 64, 20) };
+    let c = ExperimentConfig {
+        backend: BackendKind::Gpu,
+        ..cfg(WorkloadKind::Heat, 64, 20)
+    };
     let reference = cpu_run(&c, 20);
     let mut w = GpuWorkload::new(ctx, c.clone()).unwrap();
     w.step(20).unwrap();
-    let r = w.validate(&reference, Tolerance::gpu_vs_cpu(c.workload, 20)).unwrap();
+    let r = w
+        .validate(&reference, Tolerance::gpu_vs_cpu(c.workload, 20))
+        .unwrap();
     assert!(r.passed, "{r:?}");
 }
 
@@ -244,7 +265,11 @@ fn oversized_workgroup_is_a_clean_error() {
 #[test]
 fn oversized_state_is_a_clean_error() {
     let ctx = gpu_or_skip!();
-    let max = ctx.report.limits.max_storage_buffer_binding_size.min(ctx.report.limits.max_buffer_size);
+    let max = ctx
+        .report
+        .limits
+        .max_storage_buffer_binding_size
+        .min(ctx.report.limits.max_buffer_size);
     let too_many = (max / 32 + 1).min(50_000_000);
     if too_many * 32 <= max {
         return; // device limit above our config cap; nothing to test
@@ -276,14 +301,28 @@ fn gpu_particle_energy_and_bounds() {
 fn offscreen_render_produces_pixels() {
     let ctx = gpu_or_skip!();
     for kind in [WorkloadKind::ParticlesLocal, WorkloadKind::Heat] {
-        let mut c = cfg(kind, if kind == WorkloadKind::Heat { 128 } else { 5000 }, 10);
+        let mut c = cfg(
+            kind,
+            if kind == WorkloadKind::Heat {
+                128
+            } else {
+                5000
+            },
+            10,
+        );
         c.backend = BackendKind::Gpu;
         let mut w = GpuWorkload::new(ctx.clone(), c.clone()).unwrap();
         w.step(10).unwrap();
         let view = aether_gpu::View::for_workload(kind, c.grid, c.count, 1.0);
         let px = aether_gpu::render_to_rgba(&ctx, &w, 128, 128, &view).unwrap();
         assert_eq!(px.len(), 128 * 128 * 4);
-        let lit = px.chunks(4).filter(|p| p[0] as u32 + p[1] as u32 + p[2] as u32 > 120).count();
-        assert!(lit > 50, "{kind:?}: expected visible content, got {lit} bright pixels");
+        let lit = px
+            .chunks(4)
+            .filter(|p| p[0] as u32 + p[1] as u32 + p[2] as u32 > 120)
+            .count();
+        assert!(
+            lit > 50,
+            "{kind:?}: expected visible content, got {lit} bright pixels"
+        );
     }
 }

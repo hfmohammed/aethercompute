@@ -4,6 +4,6 @@ pub mod context;
 pub mod render;
 pub mod sim;
 
-pub use context::{AdapterReport, GpuContext, GpuError, LimitsReport};
+pub use context::{enumerate_adapters, AdapterReport, GpuContext, GpuError, LimitsReport};
 pub use render::{render_to_rgba, Renderer, View};
 pub use sim::GpuWorkload;

@@ -89,6 +89,15 @@ impl AdapterReport {
     }
 }
 
+/// Every adapter visible to wgpu on this machine (for `aether info`).
+pub fn enumerate_adapters() -> Vec<AdapterReport> {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()))
+        .iter()
+        .map(AdapterReport::from_adapter)
+        .collect()
+}
+
 /// A selected adapter with an open device and queue.
 pub struct GpuContext {
     pub instance: wgpu::Instance,
@@ -101,9 +110,10 @@ pub struct GpuContext {
 impl GpuContext {
     /// Headless context on the high-performance adapter.
     pub fn new() -> Result<Arc<Self>, GpuError> {
-        Self::with_surface(wgpu::Instance::new(
-            wgpu::InstanceDescriptor::new_without_display_handle(),
-        ), None)
+        Self::with_surface(
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle()),
+            None,
+        )
     }
 
     /// Context that can present to `surface` (for the viewer).
@@ -181,11 +191,17 @@ impl GpuContext {
 }
 
 /// Map a staging buffer for reading and copy its contents out.
-pub(crate) fn map_read(ctx: &GpuContext, staging: &wgpu::Buffer, size: u64) -> Result<Vec<u8>, GpuError> {
+pub(crate) fn map_read(
+    ctx: &GpuContext,
+    staging: &wgpu::Buffer,
+    size: u64,
+) -> Result<Vec<u8>, GpuError> {
     let (tx, rx) = std::sync::mpsc::channel();
-    staging.slice(..size).map_async(wgpu::MapMode::Read, move |r| {
-        let _ = tx.send(r);
-    });
+    staging
+        .slice(..size)
+        .map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
     ctx.wait_idle()?;
     rx.recv()
         .map_err(|e| GpuError::Readback(e.to_string()))?

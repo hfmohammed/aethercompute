@@ -121,14 +121,17 @@ fn bench_one_inner(
 
     let compute = Summary::from_samples(&samples.compute_ms);
     let median_step_ms = compute.as_ref().map(|s| s.median / cfg.steps.max(1) as f64);
-    let median_mupdates_per_s = compute.as_ref().map(|s| {
-        cfg.updates_per_step() as f64 * cfg.steps as f64 / (s.median / 1e3) / 1e6
-    });
+    let median_mupdates_per_s = compute
+        .as_ref()
+        .map(|s| cfg.updates_per_step() as f64 * cfg.steps as f64 / (s.median / 1e3) / 1e6);
     Ok(BenchRecord {
         config: cfg.clone(),
         backend_description: w.describe(),
         complexity: cfg.workload.complexity().to_string(),
-        cold_start: Some(ColdStart { setup_ms, first_run_ms }),
+        cold_start: Some(ColdStart {
+            setup_ms,
+            first_run_ms,
+        }),
         readback: Summary::from_samples(&samples.readback_ms),
         end_to_end: Summary::from_samples(&samples.end_to_end_ms),
         compute,
@@ -146,23 +149,34 @@ fn median_of(r: &BenchRecord, f: impl Fn(&BenchRecord) -> Option<&Summary>) -> O
 
 fn speedups(records: &[BenchRecord]) -> Vec<Speedup> {
     let size_of = |r: &BenchRecord| {
-        if r.config.workload.is_particles() { r.config.count } else { r.config.grid }
+        if r.config.workload.is_particles() {
+            r.config.count
+        } else {
+            r.config.grid
+        }
     };
     let find = |kind: WorkloadKind, size: u32, backend: BackendKind| {
         records.iter().find(|r| {
-            r.config.workload == kind && size_of(r) == size && r.config.backend == backend && r.error.is_none()
+            r.config.workload == kind
+                && size_of(r) == size
+                && r.config.backend == backend
+                && r.error.is_none()
         })
     };
-    let ratio = |cpu: Option<&BenchRecord>, gpu: &BenchRecord, f: fn(&BenchRecord) -> Option<&Summary>| {
-        let (c, g) = (median_of(cpu?, f)?, median_of(gpu, f)?);
-        (g > 0.0).then_some(c / g)
-    };
+    let ratio =
+        |cpu: Option<&BenchRecord>, gpu: &BenchRecord, f: fn(&BenchRecord) -> Option<&Summary>| {
+            let (c, g) = (median_of(cpu?, f)?, median_of(gpu, f)?);
+            (g > 0.0).then_some(c / g)
+        };
     records
         .iter()
         .filter(|r| r.config.backend == BackendKind::Gpu && r.error.is_none())
         .map(|g| {
             let (kind, size) = (g.config.workload, size_of(g));
-            let (scalar, rayon) = (find(kind, size, BackendKind::Scalar), find(kind, size, BackendKind::Rayon));
+            let (scalar, rayon) = (
+                find(kind, size, BackendKind::Scalar),
+                find(kind, size, BackendKind::Rayon),
+            );
             Speedup {
                 workload: kind.as_str().to_string(),
                 size,
@@ -178,8 +192,13 @@ fn speedups(records: &[BenchRecord]) -> Vec<Speedup> {
 
 /// Run every (size, backend[, workgroup]) combination and assemble a report.
 /// A missing GPU does not abort the sweep: GPU records carry the error.
-pub fn run_sweep(spec: &SweepSpec, progress: &mut dyn FnMut(&str)) -> Result<BenchReport, BenchError> {
-    spec.base.validate().map_err(|e| BenchError::Config(e.to_string()))?;
+pub fn run_sweep(
+    spec: &SweepSpec,
+    progress: &mut dyn FnMut(&str),
+) -> Result<BenchReport, BenchError> {
+    spec.base
+        .validate()
+        .map_err(|e| BenchError::Config(e.to_string()))?;
     if spec.base.repeats < 1 {
         return Err(BenchError::Config("repeats must be >= 1".into()));
     }
@@ -196,8 +215,16 @@ pub fn run_sweep(spec: &SweepSpec, progress: &mut dyn FnMut(&str)) -> Result<Ben
         None
     };
 
-    let default_size = if spec.base.workload.is_particles() { spec.base.count } else { spec.base.grid };
-    let sizes = if spec.sizes.is_empty() { vec![default_size] } else { spec.sizes.clone() };
+    let default_size = if spec.base.workload.is_particles() {
+        spec.base.count
+    } else {
+        spec.base.grid
+    };
+    let sizes = if spec.sizes.is_empty() {
+        vec![default_size]
+    } else {
+        spec.sizes.clone()
+    };
     let workgroups = if spec.workgroups.is_empty() {
         vec![spec.base.workgroup_size]
     } else {
@@ -207,11 +234,20 @@ pub fn run_sweep(spec: &SweepSpec, progress: &mut dyn FnMut(&str)) -> Result<Ben
     let mut records = Vec::new();
     for &size in &sizes {
         let cfg = with_size(&spec.base, size);
-        cfg.validate().map_err(|e| BenchError::Config(e.to_string()))?;
-        progress(&format!("[{}] {}: computing scalar reference", cfg.workload.as_str(), cfg.size_label()));
+        cfg.validate()
+            .map_err(|e| BenchError::Config(e.to_string()))?;
+        progress(&format!(
+            "[{}] {}: computing scalar reference",
+            cfg.workload.as_str(),
+            cfg.size_label()
+        ));
         let reference = reference_run(&cfg)?;
         for &backend in &spec.backends {
-            let wgs: &[u32] = if backend == BackendKind::Gpu { &workgroups } else { &workgroups[..1] };
+            let wgs: &[u32] = if backend == BackendKind::Gpu {
+                &workgroups
+            } else {
+                &workgroups[..1]
+            };
             for &wg in wgs {
                 let mut c = cfg.clone();
                 c.backend = backend;
@@ -221,7 +257,11 @@ pub fn run_sweep(spec: &SweepSpec, progress: &mut dyn FnMut(&str)) -> Result<Ben
                 } else {
                     backend.as_str().to_string()
                 };
-                progress(&format!("[{}] {}: {label}", c.workload.as_str(), c.size_label()));
+                progress(&format!(
+                    "[{}] {}: {label}",
+                    c.workload.as_str(),
+                    c.size_label()
+                ));
                 let rec = if backend == BackendKind::Gpu && gpu.is_none() {
                     BenchRecord::failed(
                         c,
@@ -255,7 +295,10 @@ pub fn run_sweep(spec: &SweepSpec, progress: &mut dyn FnMut(&str)) -> Result<Ben
         schema_version: SCHEMA_VERSION,
         git_sha,
         git_dirty,
-        timestamp_unix: SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+        timestamp_unix: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
         machine: MachineInfo::detect(),
         adapter: gpu.as_ref().map(|g| g.report.clone()),
         timing_scope: TimingScope::default(),
@@ -269,16 +312,36 @@ mod tests {
     use super::*;
 
     fn quick(workload: WorkloadKind) -> ExperimentConfig {
-        ExperimentConfig { workload, count: 200, grid: 32, steps: 5, warmup: 1, repeats: 3, ..Default::default() }
+        ExperimentConfig {
+            workload,
+            count: 200,
+            grid: 32,
+            steps: 5,
+            warmup: 1,
+            repeats: 3,
+            ..Default::default()
+        }
     }
 
     fn spec(workload: WorkloadKind, backends: &[BackendKind]) -> SweepSpec {
-        SweepSpec { base: quick(workload), backends: backends.to_vec(), sizes: vec![], workgroups: vec![] }
+        SweepSpec {
+            base: quick(workload),
+            backends: backends.to_vec(),
+            sizes: vec![],
+            workgroups: vec![],
+        }
     }
 
     #[test]
     fn cpu_sweep_validates_and_records_samples() {
-        let r = run_sweep(&spec(WorkloadKind::ParticlesLocal, &[BackendKind::Scalar, BackendKind::Rayon]), &mut |_| {}).unwrap();
+        let r = run_sweep(
+            &spec(
+                WorkloadKind::ParticlesLocal,
+                &[BackendKind::Scalar, BackendKind::Rayon],
+            ),
+            &mut |_| {},
+        )
+        .unwrap();
         assert_eq!(r.records.len(), 2);
         for rec in &r.records {
             assert!(rec.validated_ok(), "{rec:?}");
@@ -302,7 +365,11 @@ mod tests {
 
     #[test]
     fn end_to_end_is_compute_plus_readback() {
-        let r = run_sweep(&spec(WorkloadKind::Heat, &[BackendKind::Scalar]), &mut |_| {}).unwrap();
+        let r = run_sweep(
+            &spec(WorkloadKind::Heat, &[BackendKind::Scalar]),
+            &mut |_| {},
+        )
+        .unwrap();
         let s = &r.records[0].samples;
         for i in 0..s.compute_ms.len() {
             assert!((s.end_to_end_ms[i] - s.compute_ms[i] - s.readback_ms[i]).abs() < 1e-9);
@@ -339,13 +406,29 @@ mod tests {
         let mut s = spec(WorkloadKind::Heat, &[BackendKind::Scalar, BackendKind::Gpu]);
         s.workgroups = vec![32, 64, 128];
         let r = run_sweep(&s, &mut |_| {}).unwrap();
-        assert_eq!(r.records.iter().filter(|x| x.config.backend == BackendKind::Gpu).count(), 3);
-        assert_eq!(r.records.iter().filter(|x| x.config.backend == BackendKind::Scalar).count(), 1);
+        assert_eq!(
+            r.records
+                .iter()
+                .filter(|x| x.config.backend == BackendKind::Gpu)
+                .count(),
+            3
+        );
+        assert_eq!(
+            r.records
+                .iter()
+                .filter(|x| x.config.backend == BackendKind::Scalar)
+                .count(),
+            1
+        );
     }
 
     #[test]
     fn failures_flag_bad_validation() {
-        let mut r = run_sweep(&spec(WorkloadKind::Heat, &[BackendKind::Scalar]), &mut |_| {}).unwrap();
+        let mut r = run_sweep(
+            &spec(WorkloadKind::Heat, &[BackendKind::Scalar]),
+            &mut |_| {},
+        )
+        .unwrap();
         r.records[0].validation.as_mut().unwrap().passed = false;
         assert_eq!(r.failures(false).len(), 1);
     }

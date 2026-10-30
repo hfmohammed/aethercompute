@@ -128,7 +128,9 @@ pub enum ConfigError {
 }
 
 /// Everything needed to reproduce a run on a given machine.
+/// Missing fields in a JSON config fall back to the defaults.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ExperimentConfig {
     pub workload: WorkloadKind,
     pub backend: BackendKind,

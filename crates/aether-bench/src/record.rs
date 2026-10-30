@@ -123,7 +123,9 @@ impl BenchReport {
                     r.config.size_label()
                 );
                 match (&r.error, &r.validation) {
-                    (Some(e), _) if r.config.backend == aether_core::BackendKind::Gpu && !require_gpu => {
+                    (Some(e), _)
+                        if r.config.backend == aether_core::BackendKind::Gpu && !require_gpu =>
+                    {
                         let _ = e;
                         None
                     }

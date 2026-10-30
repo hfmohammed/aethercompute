@@ -33,7 +33,14 @@ impl MachineInfo {
         let sysctl = |k: &str| if mac { run("sysctl", &["-n", k]) } else { None };
         let power_source = if mac {
             run("pmset", &["-g", "batt"])
-                .and_then(|s| s.lines().next().map(|l| l.trim_matches('\'').to_string()))
+                .and_then(|s| {
+                    s.lines().next().map(|l| {
+                        l.replace("Now drawing from", "")
+                            .trim()
+                            .trim_matches('\'')
+                            .to_string()
+                    })
+                })
                 .unwrap_or_else(|| "unknown".into())
         } else {
             "unknown".into()
@@ -48,12 +55,21 @@ impl MachineInfo {
             arch: std::env::consts::ARCH.to_string(),
             chip: sysctl("machdep.cpu.brand_string").unwrap_or_else(|| "unknown".into()),
             model: sysctl("hw.model").unwrap_or_else(|| "unknown".into()),
-            ram_bytes: sysctl("hw.memsize").and_then(|s| s.parse().ok()).unwrap_or(0),
-            logical_cpus: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
+            ram_bytes: sysctl("hw.memsize")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
+            logical_cpus: std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1),
             power_source,
             rustc: run("rustc", &["--version"]).unwrap_or_else(|| "unknown".into()),
             aether_version: env!("CARGO_PKG_VERSION").to_string(),
-            build_profile: if cfg!(debug_assertions) { "debug" } else { "release" }.into(),
+            build_profile: if cfg!(debug_assertions) {
+                "debug"
+            } else {
+                "release"
+            }
+            .into(),
         }
     }
 }

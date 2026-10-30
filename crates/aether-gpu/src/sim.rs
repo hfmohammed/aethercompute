@@ -175,9 +175,18 @@ impl GpuWorkload {
                     label: Some("step-bind-group"),
                     layout: &layout,
                     entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: read.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 1, resource: write.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 2, resource: uniform.as_entire_binding() },
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: read.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: write.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: uniform.as_entire_binding(),
+                        },
                     ],
                 })
             };
@@ -234,7 +243,10 @@ impl GpuWorkload {
 
 impl Workload for GpuWorkload {
     fn describe(&self) -> String {
-        format!("gpu ({}, {})", self.ctx.report.name, self.ctx.report.backend)
+        format!(
+            "gpu ({}, {})",
+            self.ctx.report.name, self.ctx.report.backend
+        )
     }
 
     fn config(&self) -> &ExperimentConfig {
@@ -254,7 +266,9 @@ impl Workload for GpuWorkload {
         let mut enc = self
             .ctx
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("steps") });
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("steps"),
+            });
         for _ in 0..steps {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("step"),
@@ -279,8 +293,16 @@ impl Workload for GpuWorkload {
         let mut enc = self
             .ctx
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("readback") });
-        enc.copy_buffer_to_buffer(&self.buffers[self.cur], 0, &self.staging, 0, self.state_bytes);
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("readback"),
+            });
+        enc.copy_buffer_to_buffer(
+            &self.buffers[self.cur],
+            0,
+            &self.staging,
+            0,
+            self.state_bytes,
+        );
         self.ctx.queue.submit([enc.finish()]);
         let bytes = map_read(&self.ctx, &self.staging, self.state_bytes)?;
         Ok(if self.cfg.workload.is_particles() {

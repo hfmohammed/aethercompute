@@ -42,7 +42,11 @@ impl View {
     pub fn for_workload(kind: WorkloadKind, grid: u32, count: u32, aspect: f32) -> Self {
         let mut v = Self::new(aspect);
         v.grid = grid;
-        if kind.is_particles() {
+        if kind == WorkloadKind::NbodyAllpairs {
+            v.vmax = 3.0;
+            v.zoom = 1.8;
+            v.point_size = 0.004;
+        } else if kind.is_particles() {
             v.vmax = 1.2;
             v.point_size = match count {
                 0..=2_000 => 0.008,
@@ -146,34 +150,65 @@ impl Renderer {
                     cache: None,
                 })
             };
-            let particle = make("particle-render", PARTICLE_RENDER_WGSL, &particle_layout, Some(additive));
+            let particle = make(
+                "particle-render",
+                PARTICLE_RENDER_WGSL,
+                &particle_layout,
+                Some(additive),
+            );
             let heat = make("heat-render", HEAT_RENDER_WGSL, &heat_layout, None);
             let view_buf = d.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("view"),
                 contents: bytemuck::bytes_of(&View::new(1.0)),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
-            Self { particle, heat, particle_layout, heat_layout, view_buf, format }
+            Self {
+                particle,
+                heat,
+                particle_layout,
+                heat_layout,
+                view_buf,
+                format,
+            }
         })
     }
 
     /// Record a frame into `target`; the simulation's current buffer is read
     /// directly by the shaders, so no CPU readback happens.
-    pub fn draw(&self, ctx: &GpuContext, sim: &GpuWorkload, view: &View, target: &wgpu::TextureView) {
-        ctx.queue.write_buffer(&self.view_buf, 0, bytemuck::bytes_of(view));
+    pub fn draw(
+        &self,
+        ctx: &GpuContext,
+        sim: &GpuWorkload,
+        view: &View,
+        target: &wgpu::TextureView,
+    ) {
+        ctx.queue
+            .write_buffer(&self.view_buf, 0, bytemuck::bytes_of(view));
         let particles = sim.config().workload.is_particles();
-        let layout = if particles { &self.particle_layout } else { &self.heat_layout };
+        let layout = if particles {
+            &self.particle_layout
+        } else {
+            &self.heat_layout
+        };
         let bg = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("render-bind-group"),
             layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: sim.current_buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.view_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: sim.current_buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.view_buf.as_entire_binding(),
+                },
             ],
         });
         let mut enc = ctx
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("frame"),
+            });
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("frame-pass"),
@@ -182,7 +217,12 @@ impl Renderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.015, g: 0.017, b: 0.03, a: 1.0 }),
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.015,
+                            g: 0.017,
+                            b: 0.03,
+                            a: 1.0,
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -217,7 +257,11 @@ pub fn render_to_rgba(
     let renderer = Renderer::new(ctx, format)?;
     let tex = ctx.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("offscreen"),
-        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -237,7 +281,9 @@ pub fn render_to_rgba(
     });
     let mut enc = ctx
         .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("offscreen-copy") });
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("offscreen-copy"),
+        });
     enc.copy_texture_to_buffer(
         tex.as_image_copy(),
         wgpu::TexelCopyBufferInfo {
@@ -248,7 +294,11 @@ pub fn render_to_rgba(
                 rows_per_image: Some(height),
             },
         },
-        wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
     );
     ctx.queue.submit([enc.finish()]);
     let padded = crate::context::map_read(ctx, &buf, bpr as u64 * height as u64)?;

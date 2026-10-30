@@ -27,19 +27,19 @@ impl Tolerance {
         let s = (steps.max(1) as f64).sqrt();
         match workload {
             WorkloadKind::ParticlesLocal => Tolerance {
-                abs: 1e-4 * s.max(1.0),
-                rel: 1e-4,
-                rms: 1e-5 * s.max(1.0),
-            },
-            WorkloadKind::NbodyAllpairs => Tolerance {
-                abs: 5e-4 * s.max(1.0),
-                rel: 5e-4,
-                rms: 1e-4 * s.max(1.0),
-            },
-            WorkloadKind::Heat => Tolerance {
                 abs: 1e-5 * s.max(1.0),
                 rel: 1e-4,
                 rms: 1e-6 * s.max(1.0),
+            },
+            WorkloadKind::NbodyAllpairs => Tolerance {
+                abs: 5e-5 * s.max(1.0),
+                rel: 1e-4,
+                rms: 1e-5 * s.max(1.0),
+            },
+            WorkloadKind::Heat => Tolerance {
+                abs: 1e-6 * s.max(1.0),
+                rel: 1e-4,
+                rms: 1e-7 * s.max(1.0),
             },
         }
     }

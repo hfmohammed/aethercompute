@@ -10,6 +10,7 @@ aether-bench.workspace = true
 aether-gpu.workspace = true
 wgpu.workspace = true
 winit.workspace = true
+png.workspace = true
 pollster.workspace = true
 anyhow.workspace = true
 tracing.workspace = true

@@ -8,7 +8,10 @@ pub fn write_json(report: &BenchReport, path: &Path) -> std::io::Result<()> {
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         fs::create_dir_all(dir)?;
     }
-    fs::write(path, serde_json::to_string_pretty(report).map_err(std::io::Error::other)? + "\n")
+    fs::write(
+        path,
+        serde_json::to_string_pretty(report).map_err(std::io::Error::other)? + "\n",
+    )
 }
 
 pub fn read_json(path: &Path) -> std::io::Result<BenchReport> {
@@ -19,15 +22,39 @@ pub fn read_json(path: &Path) -> std::io::Result<BenchReport> {
 pub fn to_csv(report: &BenchReport) -> Result<String, csv::Error> {
     let mut w = csv::Writer::from_writer(vec![]);
     w.write_record([
-        "workload", "backend", "size", "steps", "workgroup_size", "seed", "samples",
-        "compute_median_ms", "compute_p95_ms", "compute_p99_ms", "compute_min_ms", "compute_stddev_ms",
-        "compute_ci95_half_ms", "readback_median_ms", "end_to_end_median_ms", "median_step_ms",
-        "median_mupdates_per_s", "setup_ms", "first_run_ms", "max_abs_err", "rms_err", "validation",
-        "git_sha", "adapter", "error",
+        "workload",
+        "backend",
+        "size",
+        "steps",
+        "workgroup_size",
+        "seed",
+        "samples",
+        "compute_median_ms",
+        "compute_p95_ms",
+        "compute_p99_ms",
+        "compute_min_ms",
+        "compute_stddev_ms",
+        "compute_ci95_half_ms",
+        "readback_median_ms",
+        "end_to_end_median_ms",
+        "median_step_ms",
+        "median_mupdates_per_s",
+        "setup_ms",
+        "first_run_ms",
+        "max_abs_err",
+        "rms_err",
+        "validation",
+        "git_sha",
+        "adapter",
+        "error",
     ])?;
     let f = |v: Option<f64>| v.map(|x| format!("{x:.6}")).unwrap_or_default();
     for r in &report.records {
-        let size = if r.config.workload.is_particles() { r.config.count } else { r.config.grid };
+        let size = if r.config.workload.is_particles() {
+            r.config.count
+        } else {
+            r.config.grid
+        };
         let c = r.compute.as_ref();
         w.write_record([
             r.config.workload.as_str().to_string(),
@@ -49,11 +76,24 @@ pub fn to_csv(report: &BenchReport) -> Result<String, csv::Error> {
             f(r.median_mupdates_per_s),
             f(r.cold_start.as_ref().map(|c| c.setup_ms)),
             f(r.cold_start.as_ref().map(|c| c.first_run_ms)),
-            r.validation.as_ref().map(|v| format!("{:.6e}", v.max_abs)).unwrap_or_default(),
-            r.validation.as_ref().map(|v| format!("{:.6e}", v.rms)).unwrap_or_default(),
-            r.validation.as_ref().map(|v| if v.passed { "pass" } else { "FAIL" }.to_string()).unwrap_or_default(),
+            r.validation
+                .as_ref()
+                .map(|v| format!("{:.6e}", v.max_abs))
+                .unwrap_or_default(),
+            r.validation
+                .as_ref()
+                .map(|v| format!("{:.6e}", v.rms))
+                .unwrap_or_default(),
+            r.validation
+                .as_ref()
+                .map(|v| if v.passed { "pass" } else { "FAIL" }.to_string())
+                .unwrap_or_default(),
             report.git_sha.clone(),
-            report.adapter.as_ref().map(|a| a.name.clone()).unwrap_or_default(),
+            report
+                .adapter
+                .as_ref()
+                .map(|a| a.name.clone())
+                .unwrap_or_default(),
             r.error.clone().unwrap_or_default(),
         ])?;
     }
@@ -75,8 +115,24 @@ mod tests {
     use aether_core::{BackendKind, ExperimentConfig, WorkloadKind};
 
     fn report() -> BenchReport {
-        let base = ExperimentConfig { workload: WorkloadKind::Heat, grid: 16, steps: 3, warmup: 1, repeats: 3, ..Default::default() };
-        run_sweep(&SweepSpec { base, backends: vec![BackendKind::Scalar, BackendKind::Rayon], sizes: vec![], workgroups: vec![] }, &mut |_| {}).unwrap()
+        let base = ExperimentConfig {
+            workload: WorkloadKind::Heat,
+            grid: 16,
+            steps: 3,
+            warmup: 1,
+            repeats: 3,
+            ..Default::default()
+        };
+        run_sweep(
+            &SweepSpec {
+                base,
+                backends: vec![BackendKind::Scalar, BackendKind::Rayon],
+                sizes: vec![],
+                workgroups: vec![],
+            },
+            &mut |_| {},
+        )
+        .unwrap()
     }
 
     #[test]
