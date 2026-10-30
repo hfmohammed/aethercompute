@@ -1009,7 +1009,12 @@ mod tests {
         let per_step = with_gpu(aether_core::PassMode::PerStep, 8.0);
         let batched = with_gpu(aether_core::PassMode::Batched, 2.0);
         let strict = Options::default();
-        assert!(compare(std::slice::from_ref(&per_step), &[batched.clone()], &strict).is_err());
+        assert!(compare(
+            std::slice::from_ref(&per_step),
+            std::slice::from_ref(&batched),
+            &strict
+        )
+        .is_err());
         let loose = Options {
             ignore_pass_mode: true,
             ..strict
