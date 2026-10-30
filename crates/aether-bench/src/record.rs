@@ -1,10 +1,10 @@
-use aether_core::{validate::ErrorReport, ExperimentConfig, Summary};
+use aether_core::{validate::ErrorReport, DeviceTimingInfo, ExperimentConfig, Summary};
 use aether_gpu::AdapterReport;
 use serde::{Deserialize, Serialize};
 
 use crate::machine::MachineInfo;
 
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// What state each measured sample starts from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -77,6 +77,17 @@ pub struct Samples {
     pub compute_ms: Vec<f64>,
     pub readback_ms: Vec<f64>,
     pub end_to_end_ms: Vec<f64>,
+    /// GPU execution time per sample from timestamp queries (empty when the
+    /// backend has none). Kept separate from the host wall-clock `compute_ms`.
+    #[serde(default)]
+    pub device_compute_ms: Vec<f64>,
+    /// `compute_ms - device_compute_ms`, sample by sample.
+    #[serde(default)]
+    pub host_device_gap_ms: Vec<f64>,
+}
+
+fn no_device_timing() -> DeviceTimingInfo {
+    DeviceTimingInfo::unavailable("not measured")
 }
 
 /// Outcome of one run. Only `SkippedUnavailable` is ever optional.
@@ -92,6 +103,16 @@ pub enum RecordStatus {
     Failed,
 }
 
+impl RecordStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::SkippedUnavailable => "skipped-unavailable",
+            Self::Failed => "failed",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BenchRecord {
     #[serde(default)]
@@ -105,6 +126,20 @@ pub struct BenchRecord {
     pub compute: Option<Summary>,
     pub readback: Option<Summary>,
     pub end_to_end: Option<Summary>,
+    /// Device-side (timestamp) execution time summary.
+    #[serde(default)]
+    pub device_compute: Option<Summary>,
+    /// Per-sample `host compute - device compute`: the host/device timing gap.
+    /// It contains submission, queueing and synchronisation effects, not just
+    /// submission overhead.
+    #[serde(default)]
+    pub host_device_gap: Option<Summary>,
+    /// Whether and how device timing was obtained for this record.
+    #[serde(default = "no_device_timing")]
+    pub device_timing: DeviceTimingInfo,
+    /// Median device time divided by `steps`.
+    #[serde(default)]
+    pub median_device_step_ms: Option<f64>,
     /// Median compute time divided by `steps`.
     pub median_step_ms: Option<f64>,
     /// Median throughput in millions of updates (particles or cells) per second.
@@ -151,6 +186,10 @@ impl BenchRecord {
             compute: None,
             readback: None,
             end_to_end: None,
+            device_compute: None,
+            host_device_gap: None,
+            device_timing: no_device_timing(),
+            median_device_step_ms: None,
             median_step_ms: None,
             median_mupdates_per_s: None,
             validation: None,
@@ -203,6 +242,9 @@ pub struct BenchReport {
     pub order_seed: u64,
     #[serde(default)]
     pub cooldown_ms: u64,
+    /// Device timing was requested to be mandatory (`--require-gpu-timestamps`).
+    #[serde(default)]
+    pub require_gpu_timestamps: bool,
     /// Labels in the order the runs were executed.
     #[serde(default)]
     pub run_order: Vec<String>,
@@ -211,6 +253,27 @@ pub struct BenchReport {
 }
 
 impl BenchReport {
+    /// GPU records that ran but have no device timestamps. These only count as
+    /// failures when device timing was made mandatory.
+    pub fn timestamp_failures(&self) -> Vec<String> {
+        self.records
+            .iter()
+            .filter(|r| {
+                r.config.backend == aether_core::BackendKind::Gpu
+                    && r.status == RecordStatus::Success
+                    && !r.device_timing.available
+            })
+            .map(|r| {
+                format!(
+                    "{} gpu {}: no device timestamps ({})",
+                    r.config.workload.as_str(),
+                    r.config.size_label(),
+                    r.device_timing.reason
+                )
+            })
+            .collect()
+    }
+
     /// Records that make a run a failure: failed numerical validation, or a
     /// run error (a missing GPU only counts when `require_gpu` is set).
     pub fn failures(&self, require_gpu: bool) -> Vec<String> {

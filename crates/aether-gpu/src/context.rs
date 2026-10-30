@@ -105,6 +105,8 @@ pub struct GpuContext {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub report: AdapterReport,
+    /// `TIMESTAMP_QUERY` was supported and enabled on the device.
+    pub timestamps: bool,
 }
 
 impl GpuContext {
@@ -137,10 +139,17 @@ impl GpuContext {
             "selected GPU adapter"
         );
 
-        // Request only what we need: no optional features, adapter-supported limits.
+        // Request only TIMESTAMP_QUERY, and only when the adapter has it.
+        // Pass-boundary timestamps need nothing beyond this feature.
+        let timestamps = adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
+        let required_features = if timestamps {
+            wgpu::Features::TIMESTAMP_QUERY
+        } else {
+            wgpu::Features::empty()
+        };
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("aether-device"),
-            required_features: wgpu::Features::empty(),
+            required_features,
             required_limits: adapter.limits(),
             ..Default::default()
         }))
@@ -152,6 +161,7 @@ impl GpuContext {
             device,
             queue,
             report,
+            timestamps,
         }))
     }
 

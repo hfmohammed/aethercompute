@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use aether_core::{
-    heat, particles, ExperimentConfig, PassMode, Snapshot, Workload, WorkloadError, WorkloadKind,
+    heat, particles, DeviceTimingInfo, ExperimentConfig, PassMode, Snapshot, Workload,
+    WorkloadError, WorkloadKind,
 };
 use bytemuck::cast_slice;
 use wgpu::util::DeviceExt;
@@ -13,6 +14,19 @@ use crate::context::{map_read, GpuContext, GpuError};
 const PARTICLES_LOCAL_WGSL: &str = include_str!("../../../shaders/particles_local.wgsl");
 const NBODY_WGSL: &str = include_str!("../../../shaders/nbody_allpairs.wgsl");
 const HEAT_WGSL: &str = include_str!("../../../shaders/heat_step.wgsl");
+
+/// Pass-boundary timestamp plumbing: two ticks (begin, end) around the whole
+/// `step(n)` batch, resolved on the GPU into a small buffer that is only read
+/// back by `take_device_time_ms`, outside any host timer.
+struct StepTimer {
+    queries: wgpu::QuerySet,
+    resolve: wgpu::Buffer,
+    readback: wgpu::Buffer,
+    /// A batch has been timed since the last `take_device_time_ms`.
+    pending: bool,
+}
+
+const TIMESTAMP_BYTES: u64 = 16;
 
 /// Persistent-buffer GPU simulation: state ping-pongs between two storage
 /// buffers, the uniform block is written once, and the staging buffer is only
@@ -29,6 +43,7 @@ pub struct GpuWorkload {
     cur: usize,
     state_bytes: u64,
     groups: (u32, u32),
+    timer: Option<StepTimer>,
 }
 
 /// Split a 1D workgroup count into (x, y) so neither exceeds `max`.
@@ -195,6 +210,27 @@ impl GpuWorkload {
         })?;
         let (buffers, uniform, staging, bind_groups, pipeline) = built;
 
+        let timer = ctx.timestamps.then(|| StepTimer {
+            queries: d.create_query_set(&wgpu::QuerySetDescriptor {
+                label: Some("step-timestamps"),
+                ty: wgpu::QueryType::Timestamp,
+                count: 2,
+            }),
+            resolve: d.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("timestamp-resolve"),
+                size: TIMESTAMP_BYTES,
+                usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            }),
+            readback: d.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("timestamp-readback"),
+                size: TIMESTAMP_BYTES,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            pending: false,
+        });
+
         Ok(Self {
             ctx,
             cfg,
@@ -206,6 +242,7 @@ impl GpuWorkload {
             cur: 0,
             state_bytes,
             groups,
+            timer,
         })
     }
 
@@ -277,12 +314,25 @@ impl Workload for GpuWorkload {
             pass.dispatch_workgroups(groups.0, groups.1, 1);
             cur ^= 1;
         };
+        // Begin timestamp on the first pass, end timestamp on the last, so the
+        // interval covers the complete batch in either pass mode.
+        let timer = self.timer.as_ref();
+        let writes = |begin: bool, end: bool| {
+            // Middle passes of a per-step batch write nothing.
+            timer
+                .filter(|_| begin || end)
+                .map(|t| wgpu::ComputePassTimestampWrites {
+                    query_set: &t.queries,
+                    beginning_of_pass_write_index: begin.then_some(0),
+                    end_of_pass_write_index: end.then_some(1),
+                })
+        };
         match self.cfg.pass_mode {
             PassMode::PerStep => {
-                for _ in 0..steps {
+                for i in 0..steps {
                     let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                         label: Some("step"),
-                        timestamp_writes: None,
+                        timestamp_writes: writes(i == 0, i + 1 == steps),
                     });
                     record(&mut pass);
                 }
@@ -290,16 +340,49 @@ impl Workload for GpuWorkload {
             PassMode::Batched => {
                 let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                     label: Some("steps"),
-                    timestamp_writes: None,
+                    timestamp_writes: writes(true, true),
                 });
                 for _ in 0..steps {
                     record(&mut pass);
                 }
             }
         }
+        if let Some(t) = &self.timer {
+            enc.resolve_query_set(&t.queries, 0..2, &t.resolve, 0);
+            enc.copy_buffer_to_buffer(&t.resolve, 0, &t.readback, 0, TIMESTAMP_BYTES);
+        }
+        if let Some(t) = &mut self.timer {
+            t.pending = true;
+        }
         self.cur = cur;
         self.ctx.queue.submit([enc.finish()]);
         Ok(())
+    }
+
+    fn device_timing_info(&self) -> DeviceTimingInfo {
+        if self.timer.is_some() {
+            DeviceTimingInfo {
+                available: true,
+                reason: "GPU execution time between pass-boundary timestamps around the whole step batch".into(),
+                period_ns: Some(self.ctx.queue.get_timestamp_period()),
+                feature: Some("TIMESTAMP_QUERY".into()),
+            }
+        } else {
+            DeviceTimingInfo::unavailable("adapter does not support TIMESTAMP_QUERY")
+        }
+    }
+
+    fn take_device_time_ms(&mut self) -> Result<Option<f64>, WorkloadError> {
+        let Some(t) = self.timer.as_mut().filter(|t| t.pending) else {
+            return Ok(None);
+        };
+        t.pending = false;
+        let bytes = map_read(&self.ctx, &t.readback, TIMESTAMP_BYTES)?;
+        let tick = |i: usize| u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().unwrap());
+        let period_ns = self.ctx.queue.get_timestamp_period() as f64;
+        Ok(tick(1)
+            .checked_sub(tick(0))
+            .map(|d| d as f64 * period_ns / 1e6))
     }
 
     fn sync(&mut self) -> Result<(), WorkloadError> {

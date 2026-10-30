@@ -73,6 +73,29 @@ impl Snapshot {
     }
 }
 
+/// Whether device-side (GPU timestamp) timing is available for a backend.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DeviceTimingInfo {
+    pub available: bool,
+    /// Why timing is absent, or what the measurement covers when present.
+    pub reason: String,
+    /// Nanoseconds per timestamp tick, when available.
+    pub period_ns: Option<f32>,
+    /// Feature that provides it, e.g. `TIMESTAMP_QUERY`.
+    pub feature: Option<String>,
+}
+
+impl DeviceTimingInfo {
+    pub fn unavailable(reason: impl Into<String>) -> Self {
+        Self {
+            available: false,
+            reason: reason.into(),
+            period_ns: None,
+            feature: None,
+        }
+    }
+}
+
 /// A runnable workload on some execution backend.
 ///
 /// `step` may only *enqueue* work (the GPU backend does); call `sync` to wait
@@ -95,6 +118,18 @@ pub trait Workload {
 
     /// Copy current state to the host (implies `sync`).
     fn snapshot(&mut self) -> Result<Snapshot, WorkloadError>;
+
+    /// Whether this backend can report device-side execution time.
+    fn device_timing_info(&self) -> DeviceTimingInfo {
+        DeviceTimingInfo::unavailable("CPU backend: no device timestamps")
+    }
+
+    /// Device-side elapsed milliseconds of the most recent `step` batch, after
+    /// `sync`. Resolving it may block, so benchmarks call it outside their host
+    /// timers. `None` when unsupported or no batch ran since the last call.
+    fn take_device_time_ms(&mut self) -> Result<Option<f64>, WorkloadError> {
+        Ok(None)
+    }
 
     /// Compare current state against a reference snapshot.
     fn validate(

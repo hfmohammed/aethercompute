@@ -343,3 +343,65 @@ fn offscreen_render_produces_pixels() {
         );
     }
 }
+
+fn timed(ctx: &Arc<GpuContext>, c: &ExperimentConfig, steps: u32) -> GpuWorkload {
+    let mut c = c.clone();
+    c.backend = BackendKind::Gpu;
+    let mut w = GpuWorkload::new(ctx.clone(), c).unwrap();
+    w.step(steps).unwrap();
+    w.sync().unwrap();
+    w
+}
+
+#[test]
+fn device_timestamps_are_positive_finite_in_both_pass_modes() {
+    let ctx = gpu_or_skip!();
+    let info = GpuWorkload::new(ctx.clone(), cfg(WorkloadKind::Heat, 64, 1))
+        .unwrap()
+        .device_timing_info();
+    assert_eq!(info.available, ctx.timestamps);
+    if !ctx.timestamps {
+        assert!(info.period_ns.is_none() && info.reason.contains("TIMESTAMP_QUERY"));
+        return;
+    }
+    assert!(info.period_ns.unwrap() > 0.0);
+    for mode in [PassMode::Batched, PassMode::PerStep] {
+        for steps in [1, 7] {
+            let mut c = cfg(WorkloadKind::Heat, 128, steps);
+            c.pass_mode = mode;
+            let mut w = timed(&ctx, &c, steps);
+            let ms = w.take_device_time_ms().unwrap().expect("timestamp");
+            assert!(ms.is_finite() && ms > 0.0, "{mode:?} steps={steps}: {ms}");
+            // One reading per batch: a second take has nothing pending.
+            assert_eq!(w.take_device_time_ms().unwrap(), None);
+        }
+    }
+}
+
+#[test]
+fn device_time_scales_with_batch_size() {
+    let ctx = gpu_or_skip!();
+    if !ctx.timestamps {
+        return;
+    }
+    let c = cfg(WorkloadKind::Heat, 512, 1);
+    let mut short = timed(&ctx, &c, 5);
+    let mut long = timed(&ctx, &c, 200);
+    let (a, b) = (
+        short.take_device_time_ms().unwrap().unwrap(),
+        long.take_device_time_ms().unwrap().unwrap(),
+    );
+    assert!(b > a * 4.0, "200 steps ({b} ms) vs 5 steps ({a} ms)");
+}
+
+#[test]
+fn zero_steps_leaves_no_device_time_and_cpu_has_none() {
+    let ctx = gpu_or_skip!();
+    let mut w = GpuWorkload::new(ctx, cfg(WorkloadKind::Heat, 32, 0)).unwrap();
+    w.step(0).unwrap();
+    assert_eq!(w.take_device_time_ms().unwrap(), None);
+    let mut cpu = CpuWorkload::new(cfg(WorkloadKind::Heat, 32, 3)).unwrap();
+    cpu.step(3).unwrap();
+    assert!(!cpu.device_timing_info().available);
+    assert_eq!(cpu.take_device_time_ms().unwrap(), None);
+}

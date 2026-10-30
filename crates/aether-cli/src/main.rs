@@ -92,6 +92,10 @@ enum Command {
         /// Idle milliseconds before each run (thermal recovery).
         #[arg(long, default_value_t = 0)]
         cooldown_ms: u64,
+        /// Fail (exit 2) when a GPU run has no device timestamps, instead of
+        /// falling back to host wall-clock timing only.
+        #[arg(long)]
+        require_gpu_timestamps: bool,
     },
     /// Open the interactive viewer (GPU).
     Viewer {
@@ -437,6 +441,7 @@ fn cmd_bench(
     no_shuffle: bool,
     order_seed: Option<u64>,
     cooldown_ms: u64,
+    require_gpu_timestamps: bool,
 ) -> Result<ExitCode> {
     let mut base = common.base()?;
     if let Some(w) = warmup {
@@ -469,6 +474,7 @@ fn cmd_bench(
                 .unwrap_or(1)
         }),
         cooldown_ms,
+        require_gpu_timestamps,
         command: std::env::args().collect::<Vec<_>>().join(" "),
     };
     let report = run_sweep(&spec, &mut |m| eprintln!("{m}"))?;
@@ -487,7 +493,10 @@ fn cmd_bench(
     }
     print_summary(&report);
 
-    let failures = report.failures(require_gpu);
+    let mut failures = report.failures(require_gpu);
+    if require_gpu_timestamps {
+        failures.extend(report.timestamp_failures());
+    }
     for f in &failures {
         eprintln!("FAILED: {f}");
     }
@@ -528,12 +537,13 @@ fn print_summary(r: &aether_bench::BenchReport) {
         if r.git_dirty { " (dirty)" } else { "" }
     );
     println!(
-        "{:<16} {:>10} {:<8} {:>5} {:>12} {:>12} {:>12} {:>12} {:>10}  valid",
+        "{:<16} {:>10} {:<8} {:>5} {:>12} {:>10} {:>12} {:>12} {:>12} {:>10}  valid",
         "workload",
         "size",
         "backend",
         "wg",
         "compute ms",
+        "device ms",
         "p95 ms",
         "e2e ms",
         "Mupdates/s",
@@ -547,7 +557,7 @@ fn print_summary(r: &aether_bench::BenchReport) {
         };
         match (&rec.compute, &rec.end_to_end) {
             (Some(c), Some(e)) => println!(
-                "{:<16} {:>10} {:<8} {:>5} {:>12.3} {:>12.3} {:>12.3} {:>12.1} {:>10.4}  {}",
+                "{:<16} {:>10} {:<8} {:>5} {:>12.3} {:>10} {:>12.3} {:>12.3} {:>12.1} {:>10.4}  {}",
                 rec.config.workload.as_str(),
                 size,
                 rec.config.backend.as_str(),
@@ -557,6 +567,10 @@ fn print_summary(r: &aether_bench::BenchReport) {
                     "-".into()
                 },
                 c.median,
+                rec.device_compute
+                    .as_ref()
+                    .map(|d| format!("{:.3}", d.median))
+                    .unwrap_or_else(|| "-".into()),
                 c.p95,
                 e.median,
                 rec.median_mupdates_per_s.unwrap_or(0.0),
@@ -564,11 +578,16 @@ fn print_summary(r: &aether_bench::BenchReport) {
                 if rec.validated_ok() { "PASS" } else { "FAIL" }
             ),
             _ => println!(
-                "{:<16} {:>10} {:<8} {:>5} skipped: {}",
+                "{:<16} {:>10} {:<8} {:>5} {}: {}",
                 rec.config.workload.as_str(),
                 size,
                 rec.config.backend.as_str(),
                 "-",
+                if rec.status == aether_bench::RecordStatus::Failed {
+                    "FAILED"
+                } else {
+                    "skipped"
+                },
                 rec.error.as_deref().unwrap_or("?")
             ),
         }
@@ -637,6 +656,7 @@ fn run() -> Result<ExitCode> {
             no_shuffle,
             order_seed,
             cooldown_ms,
+            require_gpu_timestamps,
         } => cmd_bench(
             common,
             backend,
@@ -651,6 +671,7 @@ fn run() -> Result<ExitCode> {
             no_shuffle,
             order_seed,
             cooldown_ms,
+            require_gpu_timestamps,
         ),
         Command::Viewer { common } => {
             aether_viewer::run(common.single()?)?;

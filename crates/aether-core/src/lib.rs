@@ -18,4 +18,4 @@ pub use heat::{HeatParams, MAX_DIFFUSION_NUMBER};
 pub use particles::{Particle, ParticleParams};
 pub use stats::Summary;
 pub use validate::{ErrorReport, Tolerance};
-pub use workload::{Snapshot, Workload, WorkloadError};
+pub use workload::{DeviceTimingInfo, Snapshot, Workload, WorkloadError};

@@ -22,6 +22,7 @@ pub fn read_json(path: &Path) -> std::io::Result<BenchReport> {
 pub fn to_csv(report: &BenchReport) -> Result<String, csv::Error> {
     let mut w = csv::Writer::from_writer(vec![]);
     w.write_record([
+        "status",
         "workload",
         "backend",
         "size",
@@ -38,6 +39,12 @@ pub fn to_csv(report: &BenchReport) -> Result<String, csv::Error> {
         "compute_median_ci95_low_ms",
         "compute_median_ci95_high_ms",
         "compute_order_drift",
+        "device_median_ms",
+        "device_median_ci95_low_ms",
+        "device_median_ci95_high_ms",
+        "host_device_gap_median_ms",
+        "device_timestamps",
+        "timestamp_period_ns",
         "readback_median_ms",
         "end_to_end_median_ms",
         "median_step_ms",
@@ -62,7 +69,9 @@ pub fn to_csv(report: &BenchReport) -> Result<String, csv::Error> {
             r.config.grid
         };
         let c = r.compute.as_ref();
+        let d = r.device_compute.as_ref();
         w.write_record([
+            r.status.as_str().to_string(),
             r.config.workload.as_str().to_string(),
             r.config.backend.as_str().to_string(),
             size.to_string(),
@@ -79,6 +88,12 @@ pub fn to_csv(report: &BenchReport) -> Result<String, csv::Error> {
             f(c.map(|s| s.median_ci95_low)),
             f(c.map(|s| s.median_ci95_high)),
             f(c.map(|s| s.order_drift)),
+            f(d.map(|s| s.median)),
+            f(d.map(|s| s.median_ci95_low)),
+            f(d.map(|s| s.median_ci95_high)),
+            f(r.host_device_gap.as_ref().map(|s| s.median)),
+            r.device_timing.available.to_string(),
+            f(r.device_timing.period_ns.map(f64::from)),
             f(r.readback.as_ref().map(|s| s.median)),
             f(r.end_to_end.as_ref().map(|s| s.median)),
             f(r.median_step_ms),
@@ -173,13 +188,48 @@ mod tests {
     }
 
     #[test]
+    fn device_timing_survives_json_and_csv() {
+        let mut r = report();
+        let rec = &mut r.records[0];
+        rec.samples.device_compute_ms = vec![1.0, 2.0, 3.0];
+        rec.samples.host_device_gap_ms = vec![0.1, 0.2, 0.3];
+        rec.device_compute = aether_core::Summary::from_samples(&[1.0, 2.0, 3.0]);
+        rec.host_device_gap = aether_core::Summary::from_samples(&[0.1, 0.2, 0.3]);
+        rec.device_timing = aether_core::DeviceTimingInfo {
+            available: true,
+            reason: "test".into(),
+            period_ns: Some(41.67),
+            feature: Some("TIMESTAMP_QUERY".into()),
+        };
+        let p = std::env::temp_dir().join(format!("aether-dev-{}.json", std::process::id()));
+        write_json(&r, &p).unwrap();
+        let back = read_json(&p).unwrap();
+        assert_eq!(
+            back.records[0].samples.device_compute_ms,
+            vec![1.0, 2.0, 3.0]
+        );
+        assert_eq!(back.records[0].device_timing, r.records[0].device_timing);
+        assert_eq!(back.records[0].device_compute, r.records[0].device_compute);
+        std::fs::remove_file(p).ok();
+        let csv = to_csv(&r).unwrap();
+        let mut lines = csv.lines();
+        let header: Vec<_> = lines.next().unwrap().split(',').collect();
+        let row: Vec<_> = lines.next().unwrap().split(',').collect();
+        let col = |name: &str| header.iter().position(|h| *h == name).unwrap();
+        assert_eq!(row[col("status")], "success");
+        assert_eq!(row[col("device_timestamps")], "true");
+        assert_eq!(row[col("device_median_ms")], "2.000000");
+        assert_eq!(row[col("timestamp_period_ns")], "41.669998");
+    }
+
+    #[test]
     fn csv_has_header_and_row_per_record() {
         let r = report();
         let csv = to_csv(&r).unwrap();
         let lines: Vec<_> = csv.lines().collect();
         assert_eq!(lines.len(), 1 + r.records.len());
-        assert!(lines[0].starts_with("workload,backend,size"));
-        assert!(lines[1].starts_with("heat,scalar,16"));
+        assert!(lines[0].starts_with("status,workload,backend,size"));
+        assert!(lines[1].starts_with("success,heat,scalar,16"));
         assert!(lines[1].contains("pass"));
     }
 }

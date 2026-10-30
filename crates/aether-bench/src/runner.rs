@@ -6,7 +6,7 @@ use aether_core::{
     WorkloadKind,
 };
 use aether_cpu::CpuWorkload;
-use aether_gpu::{GpuContext, GpuWorkload};
+use aether_gpu::{GpuContext, GpuError, GpuWorkload};
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use thiserror::Error;
@@ -51,6 +51,7 @@ pub struct SweepSpec {
     pub order_seed: u64,
     /// Idle time between runs.
     pub cooldown_ms: u64,
+    pub require_gpu_timestamps: bool,
     /// Command line to record in the report.
     pub command: String,
 }
@@ -66,6 +67,7 @@ impl Default for SweepSpec {
             shuffle: true,
             order_seed: 1,
             cooldown_ms: 0,
+            require_gpu_timestamps: false,
             command: String::new(),
         }
     }
@@ -73,6 +75,15 @@ impl Default for SweepSpec {
 
 /// Fraction of physical RAM a single run may be estimated to use.
 const RAM_BUDGET_FRACTION: f64 = 0.6;
+
+/// Only a missing adapter makes the GPU backend optional; a device that failed
+/// to open on a machine that has an adapter is a real failure.
+pub fn classify_gpu_error(e: &GpuError) -> RecordStatus {
+    match e {
+        GpuError::NoAdapter(_) => RecordStatus::SkippedUnavailable,
+        _ => RecordStatus::Failed,
+    }
+}
 
 fn ms(t: Instant) -> f64 {
     t.elapsed().as_secs_f64() * 1e3
@@ -123,6 +134,8 @@ fn bench_one_inner(
     w.step(cfg.steps)?;
     w.sync()?;
     let first_run_ms = ms(t);
+    let device_timing = w.device_timing_info();
+    w.take_device_time_ms()?; // discard the cold run's timing
 
     // Correctness first: a fast but incorrect kernel is a failed result.
     let tol = match cfg.backend {
@@ -153,6 +166,11 @@ fn bench_one_inner(
         w.step(cfg.steps)?;
         w.sync()?;
         let compute = ms(t);
+        // Resolved outside the host timers above and below.
+        if let Some(d) = w.take_device_time_ms()? {
+            samples.device_compute_ms.push(d);
+            samples.host_device_gap_ms.push(compute - d);
+        }
         let t = Instant::now();
         let snap = w.snapshot()?;
         let readback = ms(t);
@@ -191,6 +209,11 @@ fn bench_one_inner(
             first_run_ms,
         }),
         readback: Summary::from_samples(&samples.readback_ms),
+        device_compute: Summary::from_samples(&samples.device_compute_ms),
+        host_device_gap: Summary::from_samples(&samples.host_device_gap_ms),
+        median_device_step_ms: Summary::from_samples(&samples.device_compute_ms)
+            .map(|s| s.median / cfg.steps.max(1) as f64),
+        device_timing,
         end_to_end: Summary::from_samples(&samples.end_to_end_ms),
         compute,
         samples,
@@ -268,12 +291,12 @@ pub fn run_sweep(
             "steps must be >= 1 for a benchmark".into(),
         ));
     }
-    let mut gpu_error = None;
+    let mut gpu_error: Option<(RecordStatus, String)> = None;
     let gpu = if spec.backends.contains(&BackendKind::Gpu) {
         match GpuContext::new() {
             Ok(c) => Some(c),
             Err(e) => {
-                gpu_error = Some(e.to_string());
+                gpu_error = Some((classify_gpu_error(&e), e.to_string()));
                 None
             }
         }
@@ -347,11 +370,15 @@ pub fn run_sweep(
                 std::thread::sleep(std::time::Duration::from_millis(spec.cooldown_ms));
             }
             let mut rec = if backend == BackendKind::Gpu && gpu.is_none() {
-                BenchRecord::unavailable(
-                    c,
-                    "gpu (unavailable)".into(),
-                    gpu_error.clone().unwrap_or_else(|| "no GPU".into()),
-                )
+                let (status, msg) = gpu_error
+                    .clone()
+                    .unwrap_or((RecordStatus::SkippedUnavailable, "no GPU".into()));
+                match status {
+                    RecordStatus::Failed => {
+                        BenchRecord::failed(c, "gpu (failed to initialise)".into(), msg)
+                    }
+                    _ => BenchRecord::unavailable(c, "gpu (unavailable)".into(), msg),
+                }
             } else {
                 bench_one(&c, gpu.as_ref(), &reference, spec.mode)
             };
@@ -378,7 +405,12 @@ pub fn run_sweep(
                     }
                 ));
             } else if let Some(e) = &rec.error {
-                progress(&format!("    skipped: {e}"));
+                let what = if rec.status == RecordStatus::Failed {
+                    "FAILED"
+                } else {
+                    "skipped"
+                };
+                progress(&format!("    {what}: {e}"));
             }
             let pos = canonical
                 .iter()
@@ -419,6 +451,7 @@ pub fn run_sweep(
         shuffled: spec.shuffle,
         order_seed: spec.order_seed,
         cooldown_ms: spec.cooldown_ms,
+        require_gpu_timestamps: spec.require_gpu_timestamps,
         run_order,
         records,
         speedups,
@@ -655,6 +688,65 @@ mod tests {
         recs2[1].validation.as_mut().unwrap().passed = true;
         recs2[0].validation.as_mut().unwrap().passed = false;
         assert_eq!(speedups(&recs2)[0].vs_scalar_compute, None);
+    }
+
+    #[test]
+    fn only_a_missing_adapter_is_optional() {
+        assert_eq!(
+            classify_gpu_error(&GpuError::NoAdapter("none".into())),
+            RecordStatus::SkippedUnavailable
+        );
+        for e in [
+            GpuError::Device("lost".into()),
+            GpuError::Limit("too big".into()),
+            GpuError::Validation("bad shader".into()),
+            GpuError::Readback("map failed".into()),
+        ] {
+            assert_eq!(classify_gpu_error(&e), RecordStatus::Failed, "{e}");
+        }
+    }
+
+    #[test]
+    fn cpu_records_have_no_device_timings() {
+        let r = run_sweep(
+            &spec(
+                WorkloadKind::Heat,
+                &[BackendKind::Scalar, BackendKind::Rayon],
+            ),
+            &mut |_| {},
+        )
+        .unwrap();
+        for rec in &r.records {
+            assert!(!rec.device_timing.available);
+            assert!(rec.samples.device_compute_ms.is_empty());
+            assert!(rec.device_compute.is_none() && rec.host_device_gap.is_none());
+        }
+        assert!(r.timestamp_failures().is_empty());
+    }
+
+    #[test]
+    fn gpu_records_carry_device_samples_when_supported() {
+        let r = run_sweep(&spec(WorkloadKind::Heat, &[BackendKind::Gpu]), &mut |_| {}).unwrap();
+        let rec = &r.records[0];
+        if rec.status != RecordStatus::Success {
+            return; // no GPU on this machine
+        }
+        if rec.device_timing.available {
+            let n = rec.samples.compute_ms.len();
+            assert_eq!(rec.samples.device_compute_ms.len(), n);
+            assert_eq!(rec.samples.host_device_gap_ms.len(), n);
+            assert!(rec
+                .samples
+                .device_compute_ms
+                .iter()
+                .all(|d| d.is_finite() && *d > 0.0));
+            assert!(rec.device_compute.is_some() && rec.median_device_step_ms.unwrap() > 0.0);
+            assert!(r.timestamp_failures().is_empty());
+        } else {
+            // Unsupported adapter: wall-clock results are still complete.
+            assert!(rec.compute.is_some() && rec.samples.device_compute_ms.is_empty());
+            assert_eq!(r.timestamp_failures().len(), 1);
+        }
     }
 
     #[test]

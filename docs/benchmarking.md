@@ -17,14 +17,42 @@ the JSON; the summary gives n, min, median, mean, p95, p99, max, stddev, the
 95% confidence half-width of the mean (Student t), a **bootstrap 95% interval
 of the median** (2000 resamples, fixed seed) and `order_drift`. Medians are used
 for throughput and speed-up. These are *wall-clock* times measured from the
-host; no GPU timestamp queries are used yet, so "GPU compute" includes
-submission and synchronisation overhead.
+host. For GPU records the harness additionally reports **device execution
+time** from timestamp queries (below); the two series are never merged.
 
 Timing samples are not independent (thermal throttling, boost clocks), so the
 Student-t interval understates uncertainty; quote the bootstrap median interval.
 `order_drift` is the median of the second half of the samples (in run order)
 over the median of the first half; the runner prints a warning when it is more
 than 10% from 1.0.
+
+## GPU timestamps
+
+When the adapter supports `TIMESTAMP_QUERY` (it is the only optional feature
+requested, and only if present; Apple GPUs need nothing more for pass-boundary
+timestamps) every `step(n)` batch is bracketed by two timestamps: the begin
+timestamp is written by the first compute pass and the end timestamp by the last
+one, so the interval covers the whole batch in both `batched` and `per-step`
+pass modes. The ticks are resolved into a small buffer inside the same command
+buffer; that buffer is mapped and read only after the host compute timer has
+stopped, so reading it does not inflate `compute_ms`.
+
+Per record, kept as separate series next to the host wall-clock ones:
+
+| field | meaning |
+|-------|---------|
+| `samples.device_compute_ms`, `device_compute` | GPU execution time per sample and its summary (median, bootstrap CI, drift) |
+| `samples.host_device_gap_ms`, `host_device_gap` | `host compute - device compute`, sample by sample. A **host/device timing gap**: it holds command encoding, submission, queueing and synchronisation latency, not just submission overhead |
+| `median_device_step_ms` | median device time / `steps` |
+| `device_timing` | `available`, `reason`, `period_ns` (ns per tick), `feature` |
+
+CPU backends and adapters without the feature have no device series; wall-clock
+results are still complete and `device_timing.available` is `false` with the
+reason. `--require-gpu-timestamps` turns that absence into a failure (exit 2).
+The CSV carries `device_median_ms`, its bootstrap interval,
+`host_device_gap_median_ms`, `device_timestamps` and `timestamp_period_ns`.
+Timestamps measure GPU execution only; the speed-up tables still use host
+wall-clock compute and end-to-end times.
 
 ## Sample state: `--bench-mode`
 
@@ -59,7 +87,8 @@ host/GPU copies can exceed it.
 
 Each record is `success`, `skipped-unavailable` (no GPU adapter on this
 machine) or `failed` (the run errored, e.g. shader compile or device loss).
-Only `skipped-unavailable` is optional; `failed` and numerically invalid
+Only `skipped-unavailable` is optional (`NoAdapter` is the sole error that maps
+to it; a device that fails to open on a machine with an adapter is `failed`); `failed` and numerically invalid
 records always fail the command (exit code 2) and never contribute to speed-ups
 or charts, and neither does a CPU baseline that failed validation.
 

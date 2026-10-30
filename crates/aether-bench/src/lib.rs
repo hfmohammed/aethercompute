@@ -11,4 +11,4 @@ pub use machine::MachineInfo;
 pub use record::{
     BenchMode, BenchRecord, BenchReport, ColdStart, RecordStatus, Samples, Speedup, TimingScope,
 };
-pub use runner::{create_workload, run_sweep, BenchError, SweepSpec};
+pub use runner::{classify_gpu_error, create_workload, run_sweep, BenchError, SweepSpec};
