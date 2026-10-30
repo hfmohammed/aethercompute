@@ -139,6 +139,9 @@ enum Command {
         /// Allow mixing reset/continuous (or legacy schema-v1) reports.
         #[arg(long)]
         allow_mode_mismatch: bool,
+        /// Match GPU records regardless of pass mode (per-step vs batched).
+        #[arg(long)]
+        ignore_pass_mode: bool,
         /// Also fail (exit 2) on inconclusive results.
         #[arg(long)]
         strict: bool,
@@ -547,6 +550,7 @@ fn cmd_compare(
     threshold: f64,
     metric: aether_bench::compare::Metric,
     allow_mode_mismatch: bool,
+    ignore_pass_mode: bool,
     strict: bool,
     json: Option<PathBuf>,
     markdown: Option<PathBuf>,
@@ -566,6 +570,7 @@ fn cmd_compare(
         threshold,
         metric,
         allow_mode_mismatch,
+        ignore_pass_mode,
     };
     let candidate = load(&reports)?;
     let write = |path: &Option<PathBuf>, text: &str| -> Result<()> {
@@ -770,6 +775,7 @@ fn run() -> Result<ExitCode> {
             threshold,
             metric,
             allow_mode_mismatch,
+            ignore_pass_mode,
             strict,
             json,
             markdown,
@@ -779,6 +785,7 @@ fn run() -> Result<ExitCode> {
             threshold,
             metric,
             allow_mode_mismatch,
+            ignore_pass_mode,
             strict,
             json,
             markdown,

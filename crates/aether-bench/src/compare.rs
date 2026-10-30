@@ -213,6 +213,9 @@ pub struct Options {
     pub metric: Metric,
     /// Allow mixing reset and continuous (or legacy v1) reports.
     pub allow_mode_mismatch: bool,
+    /// Treat the GPU pass mode as a value to compare rather than part of the
+    /// key (for per-step vs batched experiments).
+    pub ignore_pass_mode: bool,
 }
 
 impl Default for Options {
@@ -221,6 +224,7 @@ impl Default for Options {
             threshold: 0.10,
             metric: Metric::Compute,
             allow_mode_mismatch: false,
+            ignore_pass_mode: false,
         }
     }
 }
@@ -326,7 +330,10 @@ pub fn aggregate(
                 excluded += 1;
                 continue;
             }
-            let key = Key::of(r);
+            let mut key = Key::of(r);
+            if opts.ignore_pass_mode && key.pass_mode != "-" {
+                key.pass_mode = "*".into();
+            }
             let e = [&r.validation, &r.final_validation]
                 .into_iter()
                 .flatten()
@@ -985,6 +992,37 @@ mod tests {
         assert!(c.regressions().is_empty());
         assert!(c.rows.iter().all(|x| x.verdict == Verdict::Inconclusive));
         assert!(c.warnings.iter().any(|w| w.contains("single run")));
+    }
+
+    #[test]
+    fn pass_modes_align_only_when_ignored() {
+        let r = base_report();
+        let with_gpu = |mode: aether_core::PassMode, ms: f64| {
+            let mut rep = r.clone();
+            let mut gpu = rep.records[0].clone();
+            gpu.config.backend = BackendKind::Gpu;
+            gpu.config.pass_mode = mode;
+            set_compute(&mut gpu, ms);
+            rep.records = vec![gpu];
+            rep
+        };
+        let per_step = with_gpu(aether_core::PassMode::PerStep, 8.0);
+        let batched = with_gpu(aether_core::PassMode::Batched, 2.0);
+        let strict = Options::default();
+        assert!(compare(std::slice::from_ref(&per_step), &[batched.clone()], &strict).is_err());
+        let loose = Options {
+            ignore_pass_mode: true,
+            ..strict
+        };
+        let c = compare(
+            &[per_step.clone(), per_step],
+            &[batched.clone(), batched],
+            &loose,
+        )
+        .unwrap();
+        assert_eq!(c.rows.len(), 1);
+        assert!((c.rows[0].ratio - 0.25).abs() < 1e-9);
+        assert_eq!(c.rows[0].verdict, Verdict::Improvement);
     }
 
     #[test]

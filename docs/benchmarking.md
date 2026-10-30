@@ -142,6 +142,9 @@ aether compare cand1.json cand2.json cand3.json \
   by more than `--threshold` *and* every candidate run to be slower than every
   baseline run. Beyond the threshold with overlapping runs, or with fewer than
   two runs per side, is **inconclusive** (exit 2 only with `--strict`).
+* `--ignore-pass-mode` matches GPU records regardless of pass mode, so a
+  per-step baseline can be compared with a batched candidate (ratio < 1 means
+  batched is faster).
 * Reset and continuous reports, and legacy schema-v1 reports (continuous), are
   refused unless `--allow-mode-mismatch` is given.
 * Warnings: dirty working trees, non-release builds, battery power, differing
@@ -154,15 +157,27 @@ aether compare cand1.json cand2.json cand3.json \
 ## Reproducing
 
 ```bash
-./scripts/bench.sh        # writes results/*.json, *.csv and docs/img/*.svg
+./scripts/bench.sh            # official: clean tree + AC power required
+./scripts/bench.sh --check    # preflight only
+./scripts/bench.sh --smoke    # tiny sizes, never publishes; tests the pipeline
 ```
 
-or individually:
+The official script runs three complete sweeps with order seeds 101, 202 and
+303, writing every report to a fresh staging directory outside the repository
+(`seed-101/{particles,heat,nbody}.json` and so on, with `--require-gpu
+--require-gpu-timestamps --bench-mode reset`). It re-checks the clean tree and
+AC power before every run, aggregates the three runs per workload with
+`aether compare`, and copies results into `results/runs/` and
+`results/aggregate/` only after every run succeeded; staging is never deleted,
+so a failed sweep keeps its partial results. Previous continuous-mode results
+are moved to `results/legacy-continuous-v1/`.
+
+A single run by hand (write outside the repository so the tree stays clean):
 
 ```bash
 cargo build --release -p aether-cli
 target/release/aether bench -w heat --grid 512 --steps 200 --warmup 5 --repeats 20 \
-    --workgroup-sweep 64,128,256 -o results/m2-heat.json --csv results/m2-heat.csv --plot-dir docs/img
+    --workgroup-sweep 64,128,256 --order-seed 101 -o /tmp/heat.json --csv /tmp/heat.csv
 ```
 
 Each JSON records: schema version, git commit (and whether the tree was dirty),
