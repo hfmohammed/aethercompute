@@ -79,8 +79,23 @@ pub struct Samples {
     pub end_to_end_ms: Vec<f64>,
 }
 
+/// Outcome of one run. Only `SkippedUnavailable` is ever optional.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RecordStatus {
+    /// Ran to completion (it may still have failed validation).
+    #[default]
+    Success,
+    /// The backend does not exist on this machine (e.g. no GPU adapter).
+    SkippedUnavailable,
+    /// The run was attempted and errored (shader compile, device loss, ...).
+    Failed,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BenchRecord {
+    #[serde(default)]
+    pub status: RecordStatus,
     pub config: ExperimentConfig,
     /// Backend description, e.g. `gpu (Apple M2, Metal)`.
     pub backend_description: String,
@@ -112,7 +127,22 @@ pub struct BenchRecord {
 
 impl BenchRecord {
     pub fn failed(config: ExperimentConfig, description: String, error: String) -> Self {
+        Self::errored(RecordStatus::Failed, config, description, error)
+    }
+
+    /// The backend is not present on this machine.
+    pub fn unavailable(config: ExperimentConfig, description: String, error: String) -> Self {
+        Self::errored(RecordStatus::SkippedUnavailable, config, description, error)
+    }
+
+    fn errored(
+        status: RecordStatus,
+        config: ExperimentConfig,
+        description: String,
+        error: String,
+    ) -> Self {
         Self {
+            status,
             complexity: config.workload.complexity().to_string(),
             config,
             backend_description: description,
@@ -194,10 +224,9 @@ impl BenchReport {
                     r.config.size_label()
                 );
                 match (&r.error, &r.validation) {
-                    (Some(e), _)
-                        if r.config.backend == aether_core::BackendKind::Gpu && !require_gpu =>
+                    (Some(_), _)
+                        if r.status == RecordStatus::SkippedUnavailable && !require_gpu =>
                     {
-                        let _ = e;
                         None
                     }
                     (Some(e), _) => Some(format!("{label}: {e}")),

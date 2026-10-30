@@ -57,6 +57,7 @@ impl MachineInfo {
             model: sysctl("hw.model").unwrap_or_else(|| "unknown".into()),
             ram_bytes: sysctl("hw.memsize")
                 .and_then(|s| s.parse().ok())
+                .or_else(linux_mem_total)
                 .unwrap_or(0),
             logical_cpus: std::thread::available_parallelism()
                 .map(|n| n.get())
@@ -74,6 +75,22 @@ impl MachineInfo {
     }
 }
 
+/// Physical RAM from `/proc/meminfo` (Linux); `None` elsewhere.
+fn linux_mem_total() -> Option<u64> {
+    parse_meminfo(&std::fs::read_to_string("/proc/meminfo").ok()?)
+}
+
+fn parse_meminfo(text: &str) -> Option<u64> {
+    let kb: u64 = text
+        .lines()
+        .find_map(|l| l.strip_prefix("MemTotal:"))?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()?;
+    Some(kb * 1024)
+}
+
 /// (commit sha, working tree dirty). Falls back to `GIT_SHA` or "unknown".
 pub fn git_state() -> (String, bool) {
     let sha = run("git", &["rev-parse", "HEAD"])
@@ -86,6 +103,13 @@ pub fn git_state() -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_proc_meminfo() {
+        let t = "MemTotal:       16384000 kB\nMemFree:  1 kB\n";
+        assert_eq!(parse_meminfo(t), Some(16_384_000 * 1024));
+        assert_eq!(parse_meminfo("nothing"), None);
+    }
 
     #[test]
     fn detect_fills_basics() {

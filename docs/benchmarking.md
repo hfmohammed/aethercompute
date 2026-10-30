@@ -36,8 +36,10 @@ than 10% from 1.0.
 ## Run order and thermal bias
 
 Within each problem size, backends and GPU workgroup sizes run in a **seeded
-random order** (`--order-seed`, default 1; `--no-shuffle` for fixed order), so
-no backend systematically runs on a hot or cold machine. The executed order is
+random order**. The seed is random per run unless `--order-seed N` is given (it
+is always recorded), so repeated runs place backends in different thermal
+positions; for a headline number, run three times and compare. `--no-shuffle`
+gives a fixed order. A fixed seed only relocates bias, it does not remove it. The executed order is
 stored in `run_order` and each record's `run_index`; the report itself stays in
 canonical (size, backend, workgroup) order. `--cooldown-ms N` idles before
 every run. The JSON also stores the exact command line (`command`).
@@ -47,8 +49,19 @@ every run. The JSON also stores the exact command line (`command`).
 Floating-point inputs (`dt`, `softening`, `force_scale`, `damping`, `alpha`,
 `diffusion_number`) must be finite, `alpha` must be positive, and
 `damping*dt` must stay below 1 (otherwise the drag factor flips sign). A
-benchmark also needs `steps >= 1`. Each size's estimated footprint (state
-buffers plus readback copies) must fit within 60% of physical RAM.
+benchmark also needs `steps >= 1`. Each size's *approximate* footprint (three
+copies of the state) must fit within 60% of physical RAM (read from `sysctl` on
+macOS, `/proc/meminfo` on Linux; unknown RAM disables the check). It is an
+estimate: the scalar reference stays resident during other runs, and temporary
+host/GPU copies can exceed it.
+
+## Record status
+
+Each record is `success`, `skipped-unavailable` (no GPU adapter on this
+machine) or `failed` (the run errored, e.g. shader compile or device loss).
+Only `skipped-unavailable` is optional; `failed` and numerically invalid
+records always fail the command (exit code 2) and never contribute to speed-ups
+or charts, and neither does a CPU baseline that failed validation.
 
 ## Correctness gate
 

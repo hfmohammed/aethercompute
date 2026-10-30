@@ -84,9 +84,11 @@ enum Command {
         /// Run backends/workgroups in a fixed order instead of shuffling.
         #[arg(long)]
         no_shuffle: bool,
-        /// Seed for the execution-order shuffle (recorded in the report).
-        #[arg(long, default_value_t = 1)]
-        order_seed: u64,
+        /// Seed for the execution-order shuffle. Default: random per run, so
+        /// repeated runs do not always put the same backend in the same
+        /// thermal position. Always recorded in the report.
+        #[arg(long)]
+        order_seed: Option<u64>,
         /// Idle milliseconds before each run (thermal recovery).
         #[arg(long, default_value_t = 0)]
         cooldown_ms: u64,
@@ -433,7 +435,7 @@ fn cmd_bench(
     require_gpu_flag: bool,
     bench_mode: BenchMode,
     no_shuffle: bool,
-    order_seed: u64,
+    order_seed: Option<u64>,
     cooldown_ms: u64,
 ) -> Result<ExitCode> {
     let mut base = common.base()?;
@@ -460,7 +462,12 @@ fn cmd_bench(
         workgroups,
         mode: bench_mode,
         shuffle: !no_shuffle,
-        order_seed,
+        order_seed: order_seed.unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(1)
+        }),
         cooldown_ms,
         command: std::env::args().collect::<Vec<_>>().join(" "),
     };

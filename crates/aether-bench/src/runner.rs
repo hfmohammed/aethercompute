@@ -182,6 +182,7 @@ fn bench_one_inner(
         .as_ref()
         .map(|s| cfg.updates_per_step() as f64 * cfg.steps as f64 / (s.median / 1e3) / 1e6);
     Ok(BenchRecord {
+        status: RecordStatus::Success,
         config: cfg.clone(),
         backend_description: w.describe(),
         complexity: cfg.workload.complexity().to_string(),
@@ -220,7 +221,7 @@ fn speedups(records: &[BenchRecord]) -> Vec<Speedup> {
             r.config.workload == kind
                 && size_of(r) == size
                 && r.config.backend == backend
-                && r.error.is_none()
+                && r.validated_ok()
         })
     };
     let ratio =
@@ -230,7 +231,7 @@ fn speedups(records: &[BenchRecord]) -> Vec<Speedup> {
         };
     records
         .iter()
-        .filter(|r| r.config.backend == BackendKind::Gpu && r.error.is_none())
+        .filter(|r| r.config.backend == BackendKind::Gpu && r.validated_ok())
         .map(|g| {
             let (kind, size) = (g.config.workload, size_of(g));
             let (scalar, rayon) = (
@@ -346,7 +347,7 @@ pub fn run_sweep(
                 std::thread::sleep(std::time::Duration::from_millis(spec.cooldown_ms));
             }
             let mut rec = if backend == BackendKind::Gpu && gpu.is_none() {
-                BenchRecord::failed(
+                BenchRecord::unavailable(
                     c,
                     "gpu (unavailable)".into(),
                     gpu_error.clone().unwrap_or_else(|| "no GPU".into()),
@@ -611,6 +612,49 @@ mod tests {
         let c = run_sweep(&s, &mut |_| {}).unwrap();
         assert!(!c.shuffled);
         assert!(c.run_order[0].ends_with("scalar"));
+    }
+
+    #[test]
+    fn status_distinguishes_unavailable_from_failed() {
+        let r = run_sweep(
+            &spec(WorkloadKind::Heat, &[BackendKind::Scalar]),
+            &mut |_| {},
+        )
+        .unwrap();
+        let mut rep = r.clone();
+        let cfg = rep.records[0].config.clone();
+        let mut gpu_cfg = cfg.clone();
+        gpu_cfg.backend = BackendKind::Gpu;
+        rep.records = vec![
+            BenchRecord::unavailable(gpu_cfg.clone(), "gpu".into(), "no adapter".into()),
+            BenchRecord::failed(gpu_cfg, "gpu".into(), "shader compile error".into()),
+        ];
+        // The missing adapter is optional; a real GPU failure never is.
+        assert_eq!(rep.failures(false).len(), 1);
+        assert!(rep.failures(false)[0].contains("shader compile"));
+        assert_eq!(rep.failures(true).len(), 2);
+    }
+
+    #[test]
+    fn invalid_records_do_not_produce_speedups() {
+        let mut recs = run_sweep(
+            &spec(WorkloadKind::Heat, &[BackendKind::Scalar]),
+            &mut |_| {},
+        )
+        .unwrap()
+        .records;
+        let mut gpu = recs[0].clone();
+        gpu.config.backend = BackendKind::Gpu;
+        recs.push(gpu.clone());
+        assert_eq!(speedups(&recs).len(), 1);
+        gpu.validation.as_mut().unwrap().passed = false;
+        recs[1] = gpu;
+        assert!(speedups(&recs).is_empty());
+        // An invalid CPU baseline is not used either.
+        let mut recs2 = recs.clone();
+        recs2[1].validation.as_mut().unwrap().passed = true;
+        recs2[0].validation.as_mut().unwrap().passed = false;
+        assert_eq!(speedups(&recs2)[0].vs_scalar_compute, None);
     }
 
     #[test]
