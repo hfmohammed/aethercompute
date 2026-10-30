@@ -1,0 +1,8 @@
+{
+  "workload": "particles-local",
+  "count": 100000,
+  "steps": 200,
+  "warmup": 5,
+  "repeats": 20,
+  "seed": 42
+}

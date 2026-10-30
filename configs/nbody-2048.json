@@ -1,0 +1,9 @@
+{
+  "workload": "nbody-allpairs",
+  "count": 2048,
+  "steps": 20,
+  "warmup": 5,
+  "repeats": 20,
+  "seed": 42,
+  "softening": 0.05
+}

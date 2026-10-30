@@ -11,7 +11,9 @@ pub mod stats;
 pub mod validate;
 pub mod workload;
 
-pub use config::{BackendKind, BoundaryMode, ConfigError, ExperimentConfig, WorkloadKind};
+pub use config::{
+    BackendKind, BoundaryMode, ConfigError, ExperimentConfig, PassMode, WorkloadKind,
+};
 pub use heat::{HeatParams, MAX_DIFFUSION_NUMBER};
 pub use particles::{Particle, ParticleParams};
 pub use stats::Summary;

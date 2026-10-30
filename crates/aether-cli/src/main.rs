@@ -140,6 +140,9 @@ struct Common {
     /// GPU workgroup size.
     #[arg(long)]
     workgroup: Option<u32>,
+    /// GPU step encoding: per-step | batched
+    #[arg(long)]
+    pass_mode: Option<aether_core::PassMode>,
     /// dirichlet | neumann
     #[arg(long)]
     boundary: Option<BoundaryMode>,
@@ -180,6 +183,9 @@ impl Common {
         }
         if let Some(v) = self.workgroup {
             c.workgroup_size = v;
+        }
+        if let Some(v) = self.pass_mode {
+            c.pass_mode = v;
         }
         if let Some(v) = self.boundary {
             c.boundary = v;

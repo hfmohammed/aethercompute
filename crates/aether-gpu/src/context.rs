@@ -76,7 +76,7 @@ impl AdapterReport {
             device_id: info.device,
             limits: LimitsReport {
                 max_buffer_size: l.max_buffer_size,
-                max_storage_buffer_binding_size: l.max_storage_buffer_binding_size as u64,
+                max_storage_buffer_binding_size: l.max_storage_buffer_binding_size,
                 max_compute_workgroup_size_x: l.max_compute_workgroup_size_x,
                 max_compute_invocations_per_workgroup: l.max_compute_invocations_per_workgroup,
                 max_compute_workgroups_per_dimension: l.max_compute_workgroups_per_dimension,

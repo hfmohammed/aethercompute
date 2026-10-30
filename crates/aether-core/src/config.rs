@@ -119,6 +119,30 @@ impl std::str::FromStr for BoundaryMode {
     }
 }
 
+/// How the GPU backend encodes a batch of steps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PassMode {
+    /// One compute pass per simulation step.
+    PerStep,
+    /// All steps of a batch share one compute pass (one dispatch per step;
+    /// wgpu inserts the storage-buffer barriers between dispatches).
+    Batched,
+}
+
+impl std::str::FromStr for PassMode {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "per-step" => Ok(Self::PerStep),
+            "batched" => Ok(Self::Batched),
+            other => Err(format!(
+                "unknown pass mode '{other}' (expected per-step or batched)"
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Error, PartialEq)]
 pub enum ConfigError {
     #[error("{0}")]
@@ -151,6 +175,8 @@ pub struct ExperimentConfig {
     pub damping: f32,
     /// GPU workgroup size (threads per workgroup).
     pub workgroup_size: u32,
+    /// GPU step encoding strategy.
+    pub pass_mode: PassMode,
     pub boundary: BoundaryMode,
     /// Heat diffusion number alpha*dt/dx^2 (stable for <= 0.25).
     pub diffusion_number: f32,
@@ -174,6 +200,7 @@ impl Default for ExperimentConfig {
             force_scale: None,
             damping: 0.05,
             workgroup_size: 64,
+            pass_mode: PassMode::Batched,
             boundary: BoundaryMode::Dirichlet,
             diffusion_number: 0.2,
             alpha: 1.0,
@@ -271,8 +298,10 @@ mod tests {
 
     #[test]
     fn rejects_zero_count_and_big_nbody() {
-        let mut c = ExperimentConfig::default();
-        c.count = 0;
+        let mut c = ExperimentConfig {
+            count: 0,
+            ..Default::default()
+        };
         assert!(c.validate().is_err());
         c.workload = WorkloadKind::NbodyAllpairs;
         c.count = 1_000_000;
@@ -304,6 +333,22 @@ mod tests {
         let s = serde_json::to_string(&c).unwrap();
         let d: ExperimentConfig = serde_json::from_str(&s).unwrap();
         assert_eq!(c, d);
+    }
+
+    #[test]
+    fn pass_mode_parse_and_default() {
+        assert_eq!("per-step".parse::<PassMode>().unwrap(), PassMode::PerStep);
+        assert_eq!("batched".parse::<PassMode>().unwrap(), PassMode::Batched);
+        assert!("x".parse::<PassMode>().is_err());
+        assert_eq!(ExperimentConfig::default().pass_mode, PassMode::Batched);
+    }
+
+    #[test]
+    fn partial_json_uses_defaults() {
+        let c: ExperimentConfig = serde_json::from_str(r#"{"workload":"heat","grid":64}"#).unwrap();
+        assert_eq!(c.workload, WorkloadKind::Heat);
+        assert_eq!(c.grid, 64);
+        assert_eq!(c.seed, 42);
     }
 
     #[test]

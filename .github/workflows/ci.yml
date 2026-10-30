@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: fmt + clippy + test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets
+      # GPU tests skip themselves when the runner exposes no usable adapter,
+      # so this job is CPU-only on hosted runners; the full Metal run is
+      # performed on a local Apple Silicon machine (see docs/benchmarking.md).
+      - name: tests
+        run: cargo test --workspace
+      - name: release build
+        run: cargo build --release -p aether-cli
+      - name: smoke test CLI
+        run: |
+          ./target/release/aether info
+          ./target/release/aether validate --workload heat --size 64 --steps 20 --backend rayon
+          ./target/release/aether bench -w particles-local --count 1000 --steps 10 --warmup 1 --repeats 3 --backend scalar,rayon

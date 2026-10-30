@@ -5,7 +5,7 @@
 use std::sync::{Arc, OnceLock};
 
 use aether_core::{
-    validate::Tolerance, BackendKind, BoundaryMode, ExperimentConfig, Snapshot, Workload,
+    validate::Tolerance, BackendKind, BoundaryMode, ExperimentConfig, PassMode, Snapshot, Workload,
     WorkloadKind,
 };
 use aether_cpu::CpuWorkload;
@@ -205,6 +205,23 @@ fn step_batches_compose_on_gpu() {
     w.step(3).unwrap();
     w.step(4).unwrap();
     assert_eq!(w.snapshot().unwrap(), gpu_run(&ctx, &c, 7));
+}
+
+#[test]
+fn pass_modes_are_bit_identical() {
+    let ctx = gpu_or_skip!();
+    for kind in [
+        WorkloadKind::ParticlesLocal,
+        WorkloadKind::Heat,
+        WorkloadKind::NbodyAllpairs,
+    ] {
+        let mut a = cfg(kind, 300, 25);
+        a.pass_mode = PassMode::PerStep;
+        let mut b = a.clone();
+        b.pass_mode = PassMode::Batched;
+        assert_eq!(gpu_run(&ctx, &a, 25), gpu_run(&ctx, &b, 25), "{kind:?}");
+        check(&ctx, a, 25);
+    }
 }
 
 #[test]

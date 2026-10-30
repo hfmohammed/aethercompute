@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use aether_core::{
-    heat, particles, ExperimentConfig, Snapshot, Workload, WorkloadError, WorkloadKind,
+    heat, particles, ExperimentConfig, PassMode, Snapshot, Workload, WorkloadError, WorkloadKind,
 };
 use bytemuck::cast_slice;
 use wgpu::util::DeviceExt;
@@ -269,17 +269,35 @@ impl Workload for GpuWorkload {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("steps"),
             });
-        for _ in 0..steps {
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("step"),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &self.bind_groups[self.cur], &[]);
-            pass.dispatch_workgroups(self.groups.0, self.groups.1, 1);
-            drop(pass);
-            self.cur ^= 1;
+        let (pipeline, groups) = (&self.pipeline, self.groups);
+        let mut cur = self.cur;
+        let mut record = |pass: &mut wgpu::ComputePass<'_>| {
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &self.bind_groups[cur], &[]);
+            pass.dispatch_workgroups(groups.0, groups.1, 1);
+            cur ^= 1;
+        };
+        match self.cfg.pass_mode {
+            PassMode::PerStep => {
+                for _ in 0..steps {
+                    let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("step"),
+                        timestamp_writes: None,
+                    });
+                    record(&mut pass);
+                }
+            }
+            PassMode::Batched => {
+                let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("steps"),
+                    timestamp_writes: None,
+                });
+                for _ in 0..steps {
+                    record(&mut pass);
+                }
+            }
         }
+        self.cur = cur;
         self.ctx.queue.submit([enc.finish()]);
         Ok(())
     }

@@ -79,7 +79,7 @@ pub fn git_state() -> (String, bool) {
     let sha = run("git", &["rev-parse", "HEAD"])
         .or_else(|| std::env::var("GIT_SHA").ok())
         .unwrap_or_else(|| "unknown".into());
-    let dirty = run("git", &["status", "--porcelain"]).is_some();
+    let dirty = run("git", &["status", "--porcelain", "--untracked-files=no"]).is_some();
     (sha, dirty)
 }
 

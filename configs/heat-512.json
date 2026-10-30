@@ -1,0 +1,10 @@
+{
+  "workload": "heat",
+  "grid": 512,
+  "steps": 200,
+  "warmup": 5,
+  "repeats": 20,
+  "seed": 42,
+  "boundary": "neumann",
+  "diffusion_number": 0.2
+}
