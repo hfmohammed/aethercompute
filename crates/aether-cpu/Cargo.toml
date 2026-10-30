@@ -1,0 +1,17 @@
+[package]
+name = "aether-cpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aether-core.workspace = true
+rayon.workspace = true
+
+[dev-dependencies]
+approx.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "cpu_kernels"
+harness = false

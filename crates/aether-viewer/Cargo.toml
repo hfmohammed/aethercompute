@@ -1,0 +1,15 @@
+[package]
+name = "aether-viewer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aether-core.workspace = true
+aether-bench.workspace = true
+aether-gpu.workspace = true
+wgpu.workspace = true
+winit.workspace = true
+pollster.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
