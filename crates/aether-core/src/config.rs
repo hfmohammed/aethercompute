@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::heat::{HeatParams, MAX_DIFFUSION_NUMBER};
+use crate::heat::HeatParams;
 use crate::particles::ParticleParams;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
