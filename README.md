@@ -1,12 +1,12 @@
 # AetherCompute
 
 GPU-accelerated scientific computing engine in Rust. The same simulations run on
-three backends — **scalar CPU**, **Rayon CPU** and **GPU (wgpu / WGSL, Metal on
-macOS)** — with numerical validation against a CPU reference, reproducible
+three backends (**scalar CPU**, **Rayon CPU** and **GPU via wgpu / WGSL, Metal on
+macOS**), with numerical validation against a CPU reference, reproducible
 benchmarks that separate compute from readback, and a native interactive viewer.
 
-Built and measured on a **MacBook Pro, Apple M2, 16 GB, macOS 26.4.1**. Nothing here
-uses CUDA, PTX or NVIDIA hardware, and Windows/Linux GPU paths are untested.
+Developed and benchmarked on an Apple M2 (16 GB, macOS 26.4.1). The GPU backend targets
+Metal through wgpu; see [Platform support](#platform-support).
 
 | Heat diffusion (512², GPU) | 100,000 particles (GPU) | All-pairs N-body (4,096, GPU) |
 |---|---|---|
@@ -22,14 +22,29 @@ uses CUDA, PTX or NVIDIA hardware, and Windows/Linux GPU paths are untested.
 * **Correctness first**: every benchmark row is validated against the scalar CPU reference before it is
   timed; a fast but wrong kernel exits non-zero. Rayon is bit-identical to scalar; GPU error is reported as
   max-abs / RMS / relative (observed max-abs ≤ 4.8e-7 across all published runs).
-* **Honest benchmarks**: ≥ 20 measured repeats, warm-up and cold-start recorded separately, compute vs readback
-  vs end-to-end, medians / p95 / p99 / stddev / 95% CI, raw samples preserved, speed-up against **both** scalar
-  and Rayon baselines, hardware + git SHA stored in every result.
+* **Rigorous benchmarks**: warm-up and cold start recorded separately; compute, readback and end-to-end timed
+  separately; GPU execution time from timestamp queries alongside host wall-clock time; every sample starts from
+  identical state (`reset` mode) and the final state is re-validated; backend order is randomised per run; medians
+  with bootstrap confidence intervals, p95/p99 and drift diagnostics; raw samples, hardware, git SHA and the exact
+  command line stored in every report; speed-up against **both** scalar and Rayon baselines.
+* **Regression tooling**: `aether compare` aggregates repeated runs and flags statistically supported
+  regressions between a baseline and a candidate, with Markdown and JSON output for CI.
 * **Tuned and measured**: WGSL `override` workgroup sizes (64/128/256 sweep) and an experiment showing that
   batching steps into one compute pass cuts small-problem GPU time by up to 13x (details below).
 * **Graceful degradation**: no GPU adapter, limits exceeded or invalid config give clear errors; CPU backends
   keep working.
-* **106 automated tests** (unit, property-style invariants, scalar-vs-Rayon and CPU-vs-GPU differential tests).
+* **136 automated tests** (unit, property-style invariants, scalar-vs-Rayon and CPU-vs-GPU differential tests).
+
+## Platform support
+
+| Platform | Status |
+|---|---|
+| macOS, Apple Silicon (Metal) | Supported. All GPU tests and benchmarks run here. |
+| CPU backends (scalar, Rayon) on macOS and Linux | Supported and covered by CI. |
+| GPU on Linux (Vulkan) and Windows (DX12/Vulkan) | Expected to work through wgpu, but not yet tested. |
+
+The GPU code is written in WGSL against wgpu, so it is vendor-neutral. It does not use CUDA, and
+there is no NVIDIA-specific path.
 
 ## Quick start (Apple Silicon Mac)
 
@@ -60,8 +75,14 @@ aether bench     -w <workload> --count|--grid|--size N[,N...] --steps N --warmup
                  [-o results.json] [--csv results.csv] [--plot-dir docs/img] [--require-gpu]
 aether viewer    -w <workload> --count|--grid N ...
 aether render    -w <workload> -o frame.png --warm-steps N [--width W --height H]
+aether compare   run1.json run2.json run3.json [--baseline base1.json base2.json base3.json]
+                 [--metric compute|device|gap|readback|end-to-end] [--threshold 0.10]
+                 [--markdown out.md] [--json out.json]
 aether plot      results.json -o docs/img
 ```
+
+`bench` also takes `--bench-mode reset|continuous`, `--order-seed N`, `--cooldown-ms N`,
+`--no-shuffle` and `--require-gpu-timestamps`; see [docs/benchmarking.md](docs/benchmarking.md).
 
 Workloads: `particles-local`, `nbody-allpairs`, `heat`. Any command also takes `--config configs/x.json`
 (see [configs/](configs)), `--seed`, `--dt`, `--force-scale`, `--softening`, `--damping`, `--workgroup`,
@@ -82,13 +103,12 @@ runs, per sample of 200 steps (20 for N-body). "GPU" is the best of workgroup si
 all three are in the CSV/JSON (they differ by < ~10% except where noted). Raw samples, p95/p99, confidence
 intervals and cold-start times: [results/](results). Charts: [docs/img/](docs/img).
 
-> **Methodology note.** These tables were produced by schema-v1 reports (`bench_mode: continuous`): one simulation
-> kept evolving across warm-up and all samples, so later samples start from a different state (e.g. the heat
-> field converges). The harness now defaults to `--bench-mode reset` (identical work every sample, shuffled
-> backend order, bootstrap median CIs; see [docs/benchmarking.md](docs/benchmarking.md)). A reset-mode rerun
-> on battery power with a dirty tree gave materially lower GPU speed-ups (e.g. heat 1024² ~11x vs scalar,
-> not 31x) and noisy samples, so it is **not published here**. Treat the speed-ups below as upper-end,
-> continuous-mode figures until a clean AC-power reset-mode rerun replaces them (`./scripts/bench.sh`).
+> **Methodology.** These tables come from the first benchmark harness (report schema v1, `continuous` mode), in
+> which a single simulation keeps evolving across warm-up and all samples, so later samples start from a different
+> state (for example, the heat field converges). The current harness defaults to `--bench-mode reset`, where every
+> sample starts from identical state, and a preliminary run in that mode showed lower GPU speed-ups (for example
+> about 11x vs scalar for heat 1024², compared with 31x below). Treat the speed-ups below as upper-end figures
+> until they are replaced by a three-run `reset`-mode sweep (`./scripts/bench.sh`, aggregated with `aether compare`).
 
 ### Particles, local update (O(N)), 200 steps/sample
 
@@ -127,15 +147,16 @@ intervals and cold-start times: [results/](results). Charts: [docs/img/](docs/im
 
 How to read these numbers:
 
-* **GPU time is wall-clock** around submit + wait-for-idle (no GPU timestamps), so it includes submission overhead.
-  "Compute" excludes readback; "end-to-end" adds copying the final state back to the host.
+* **Times are host wall-clock**, measured around submit and wait-for-idle, so GPU figures include submission and
+  synchronisation overhead. Newer reports also store GPU execution time from timestamp queries as a separate
+  series. "Compute" excludes readback; "end-to-end" adds copying the final state back to the host.
 * **GPU is not always faster.** At 1,000 particles the scalar CPU is faster than the GPU (0.7x), and at 256
   bodies Rayon beats the GPU. Rayon is also *slower than scalar* at 1,000 particles because fork/join
   overhead dominates tiny loops, so GPU-vs-Rayon there overstates the win; GPU-vs-scalar is the fair baseline at that size.
 * The N-body column "M updates/s" counts one body update (each costing N interactions); it must not be compared with
   the O(N) modes.
-* Run-to-run variation on this laptop is ~10% (compare the 1024² heat GPU rows in the main sweep and the experiment).
-  Results are for this one machine and configuration; they say nothing about other hardware.
+* Run-to-run variation on this machine is about 10% (compare the 1024² heat GPU rows in the main sweep and the
+  experiment). Results apply to this machine and configuration only.
 
 ### Optimisation experiment: batching passes
 
@@ -161,15 +182,15 @@ Snapshots + error metrics --> benchmark records --> JSON / CSV / SVG   crates/ae
 Renderer (reads GPU state buffers directly)                 crates/aether-gpu, aether-viewer
 ```
 
-* [docs/design.md](docs/design.md) — equations, memory layouts, buffer lifetime, GPU execution flow
-* [docs/numerics.md](docs/numerics.md) — tolerances, stability bound, boundary conditions, tested invariants
-* [docs/benchmarking.md](docs/benchmarking.md) — timing scope, methodology, reproduction, limitations
-* [docs/decisions.md](docs/decisions.md) — why Metal/wgpu and not CUDA, and other trade-offs
+* [docs/design.md](docs/design.md): equations, memory layouts, buffer lifetime, GPU execution flow
+* [docs/numerics.md](docs/numerics.md): tolerances, stability bound, boundary conditions, tested invariants
+* [docs/benchmarking.md](docs/benchmarking.md): timing scope, methodology, reproduction, limitations
+* [docs/decisions.md](docs/decisions.md): why Metal/wgpu and not CUDA, and other trade-offs
 
 ## Testing
 
 ```bash
-cargo test --workspace          # 106 tests; GPU tests run on Metal and skip when no adapter exists
+cargo test --workspace          # 136 tests; GPU tests run on Metal and skip when no adapter exists
 cargo clippy --workspace --all-targets -- -D warnings
 cargo bench -p aether-cpu       # criterion microbenchmarks of the CPU kernels
 ```
@@ -179,8 +200,9 @@ principle / stability guard, N-body symmetry / momentum / energy drift, host-vs-
 scalar-vs-Rayon equality, CPU-vs-GPU differential tests (1, 2, 31, 63, 64, 65, 127, 1K … 100K particles; 3² … 1024²
 grids; workgroup sizes 1-256; both boundary modes; 1,000-step runs), limit/failure handling, benchmark
 statistics, JSON/CSV export and offscreen rendering. CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs
-fmt, clippy, tests and a CLI smoke test on macOS and Linux; hosted runners are CPU-only, so the GPU tests skip there and are
-run locally on the M2.
+fmt, clippy, tests and a CLI smoke test on macOS and Linux, a Rust 1.90 (MSRV) build and a dependency audit.
+Hosted runners have no usable GPU, so the GPU tests skip there; [gpu.yml](.github/workflows/gpu.yml) runs them on a
+self-hosted Apple Silicon runner.
 
 ## Repository layout
 
@@ -193,17 +215,19 @@ crates/aether-viewer  winit window, input handling, PNG screenshots
 crates/aether-cli     `aether` binary
 shaders/              particles_local, nbody_allpairs, heat_step, particle_render, heat_render (WGSL)
 configs/              reproducible sample configurations
-results/              raw benchmark data from the M2 (JSON with all samples, CSV summaries)
+results/              benchmark reports from the M2 (JSON with all samples, CSV summaries)
+scripts/              demo.sh, bench.sh (three-run official benchmark)
 docs/                 design, numerics, benchmarking, decisions, images
 ```
 
 ## Limitations and future work
 
-* Verified only on Apple M2 / Metal; other wgpu backends and platforms are untested.
-* Semi-implicit Euler only (velocity Verlet not implemented); all-pairs uses global-memory reads with no
-  workgroup-memory tiling; GPU timestamp queries are not used.
-* The viewer has no in-window text overlay (stats are in the title bar).
-* Not a physically accurate fluid solver, and CPU/GPU outputs are compared with tolerances, not bit-equality.
+* GPU results are from a single machine (Apple M2, Metal). Other wgpu backends and platforms are untested.
+* Time integration is semi-implicit Euler only; velocity Verlet is planned. The all-pairs kernel reads from
+  global memory with no workgroup-memory tiling yet.
+* The README tables predate the reset-mode harness and will be replaced by a three-run sweep.
+* The viewer shows its statistics in the window title rather than an in-window overlay.
+* Not a physically accurate fluid solver. CPU and GPU outputs agree within documented tolerances, not bit-for-bit.
 
 ## License
 

@@ -1,14 +1,14 @@
 # Decisions and trade-offs
 
-## Why wgpu + Metal, and why not CUDA
+## Why wgpu + Metal rather than CUDA
 
 * The development and target machine is an Apple Silicon MacBook (M2). CUDA and
-  PTX require NVIDIA hardware and are unavailable on macOS, so they are out of scope.
-* wgpu gives one Rust API and one shader language (WGSL) with a native Metal
-  backend on macOS. Shaders are translated to Metal Shading Language by naga.
-  Nothing here is hand-written Metal, and nothing here claims CUDA/PTX experience.
-* Other backends (Vulkan, DX12) are possible through wgpu but are **not tested**;
-  only Metal on Apple Silicon is a supported, verified target.
+  PTX require NVIDIA hardware and are not available on macOS.
+* wgpu gives one Rust API and one shader language (WGSL), with a native Metal
+  backend on macOS; naga translates the shaders to Metal Shading Language. The
+  same code is vendor-neutral and portable to other GPU APIs.
+* Vulkan and DX12 backends are available through wgpu but are not yet tested;
+  Metal on Apple Silicon is the verified target.
 
 ## Why compute only through `wgpu` and not a raw Metal crate
 
@@ -42,7 +42,7 @@ CPU/GPU results are compared with documented, tight tolerances rather than bit
 equality (`numerics.md`). Rayon vs scalar *is* bit-exact because they share the
 same per-element kernels.
 
-## Honest scope
+## Scope
 
-Not implemented: velocity Verlet, workgroup-memory tiling for all-pairs, GPU
-timestamp queries, in-window text overlay, Windows/Linux GPU testing.
+Not yet implemented: velocity Verlet, workgroup-memory tiling for all-pairs, an
+in-window text overlay, and GPU testing on Linux and Windows.
