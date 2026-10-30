@@ -60,7 +60,26 @@ pub fn fold_dispatch(groups: u64, max: u32) -> Result<(u32, u32), GpuError> {
 }
 
 impl GpuWorkload {
+    /// Simulation without timestamp queries (viewer, render, validation): no
+    /// per-batch resolve/copy work that nobody reads.
     pub fn new(ctx: Arc<GpuContext>, cfg: ExperimentConfig) -> Result<Self, WorkloadError> {
+        Self::build(ctx, cfg, false)
+    }
+
+    /// Like [`GpuWorkload::new`], but records device timestamps around every
+    /// step batch when the adapter supports them (for benchmarks).
+    pub fn with_timestamps(
+        ctx: Arc<GpuContext>,
+        cfg: ExperimentConfig,
+    ) -> Result<Self, WorkloadError> {
+        Self::build(ctx, cfg, true)
+    }
+
+    fn build(
+        ctx: Arc<GpuContext>,
+        cfg: ExperimentConfig,
+        timestamps: bool,
+    ) -> Result<Self, WorkloadError> {
         cfg.validate()?;
         let d = &ctx.device;
         let lim = &ctx.report.limits;
@@ -210,7 +229,7 @@ impl GpuWorkload {
         })?;
         let (buffers, uniform, staging, bind_groups, pipeline) = built;
 
-        let timer = ctx.timestamps.then(|| StepTimer {
+        let timer = (timestamps && ctx.timestamps).then(|| StepTimer {
             queries: d.create_query_set(&wgpu::QuerySetDescriptor {
                 label: Some("step-timestamps"),
                 ty: wgpu::QueryType::Timestamp,
@@ -368,7 +387,11 @@ impl Workload for GpuWorkload {
                 feature: Some("TIMESTAMP_QUERY".into()),
             }
         } else {
-            DeviceTimingInfo::unavailable("adapter does not support TIMESTAMP_QUERY")
+            DeviceTimingInfo::unavailable(if self.ctx.timestamps {
+                "timestamps not enabled for this workload"
+            } else {
+                "adapter does not support TIMESTAMP_QUERY"
+            })
         }
     }
 
@@ -380,9 +403,15 @@ impl Workload for GpuWorkload {
         let bytes = map_read(&self.ctx, &t.readback, TIMESTAMP_BYTES)?;
         let tick = |i: usize| u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().unwrap());
         let period_ns = self.ctx.queue.get_timestamp_period() as f64;
-        Ok(tick(1)
-            .checked_sub(tick(0))
-            .map(|d| d as f64 * period_ns / 1e6))
+        // A reversed or zero interval is a measurement failure, not a skip.
+        match tick(1).checked_sub(tick(0)) {
+            Some(d) if d > 0 => Ok(Some(d as f64 * period_ns / 1e6)),
+            _ => Err(WorkloadError::Gpu(format!(
+                "invalid timestamp interval (begin {}, end {})",
+                tick(0),
+                tick(1)
+            ))),
+        }
     }
 
     fn sync(&mut self) -> Result<(), WorkloadError> {

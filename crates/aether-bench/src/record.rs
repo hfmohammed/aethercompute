@@ -261,15 +261,27 @@ impl BenchReport {
             .filter(|r| {
                 r.config.backend == aether_core::BackendKind::Gpu
                     && r.status == RecordStatus::Success
-                    && !r.device_timing.available
             })
-            .map(|r| {
-                format!(
-                    "{} gpu {}: no device timestamps ({})",
+            .filter_map(|r| {
+                let label = format!(
+                    "{} gpu {}",
                     r.config.workload.as_str(),
-                    r.config.size_label(),
-                    r.device_timing.reason
-                )
+                    r.config.size_label()
+                );
+                if !r.device_timing.available {
+                    Some(format!(
+                        "{label}: no device timestamps ({})",
+                        r.device_timing.reason
+                    ))
+                } else if r.samples.device_compute_ms.len() != r.samples.compute_ms.len() {
+                    Some(format!(
+                        "{label}: {} device samples for {} timed samples",
+                        r.samples.device_compute_ms.len(),
+                        r.samples.compute_ms.len()
+                    ))
+                } else {
+                    None
+                }
             })
             .collect()
     }

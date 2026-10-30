@@ -116,6 +116,39 @@ enum Command {
         #[arg(long, default_value_t = 200)]
         warm_steps: u32,
     },
+    /// Aggregate benchmark reports, or compare candidate runs with a baseline.
+    ///
+    /// Each report file is one run; runs are the replicates. Without
+    /// `--baseline` the runs are aggregated (median of per-run medians, min/max
+    /// spread). With `--baseline` the candidate runs are compared with the
+    /// baseline runs; a regression needs every candidate run to be slower than
+    /// every baseline run by more than the threshold. Exit code 2 on regression.
+    Compare {
+        /// Candidate (or only) report files.
+        #[arg(required = true)]
+        reports: Vec<PathBuf>,
+        /// Baseline report files to compare against.
+        #[arg(long, num_args = 1..)]
+        baseline: Vec<PathBuf>,
+        /// Slowdown that counts as a regression, as a fraction (0.10 = 10%).
+        #[arg(long, default_value_t = 0.10)]
+        threshold: f64,
+        /// compute, device, gap, readback or end-to-end.
+        #[arg(long, default_value = "compute")]
+        metric: aether_bench::compare::Metric,
+        /// Allow mixing reset/continuous (or legacy schema-v1) reports.
+        #[arg(long)]
+        allow_mode_mismatch: bool,
+        /// Also fail (exit 2) on inconclusive results.
+        #[arg(long)]
+        strict: bool,
+        /// Write the full result as JSON.
+        #[arg(long)]
+        json: Option<PathBuf>,
+        /// Write a Markdown report (PR comment or README table).
+        #[arg(long)]
+        markdown: Option<PathBuf>,
+    },
     /// Draw SVG charts from a saved benchmark JSON report.
     Plot {
         report: PathBuf,
@@ -507,6 +540,64 @@ fn cmd_bench(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+fn cmd_compare(
+    reports: Vec<PathBuf>,
+    baseline: Vec<PathBuf>,
+    threshold: f64,
+    metric: aether_bench::compare::Metric,
+    allow_mode_mismatch: bool,
+    strict: bool,
+    json: Option<PathBuf>,
+    markdown: Option<PathBuf>,
+) -> Result<ExitCode> {
+    use aether_bench::compare::{self, Options};
+    anyhow::ensure!(
+        threshold.is_finite() && threshold > 0.0,
+        "--threshold must be a positive fraction"
+    );
+    let load = |paths: &[PathBuf]| -> Result<Vec<aether_bench::BenchReport>> {
+        paths
+            .iter()
+            .map(|p| export::read_json(p).with_context(|| format!("reading {}", p.display())))
+            .collect()
+    };
+    let opts = Options {
+        threshold,
+        metric,
+        allow_mode_mismatch,
+    };
+    let candidate = load(&reports)?;
+    let write = |path: &Option<PathBuf>, text: &str| -> Result<()> {
+        if let Some(p) = path {
+            if let Some(d) = p.parent().filter(|d| !d.as_os_str().is_empty()) {
+                std::fs::create_dir_all(d)?;
+            }
+            std::fs::write(p, text).with_context(|| format!("writing {}", p.display()))?;
+            eprintln!("wrote {}", p.display());
+        }
+        Ok(())
+    };
+
+    if baseline.is_empty() {
+        let agg = compare::aggregate("runs", &candidate, &opts)?;
+        print!("{}", compare::aggregate_text(&agg, metric));
+        write(&json, &serde_json::to_string_pretty(&agg)?)?;
+        write(&markdown, &compare::aggregate_markdown(&agg))?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    let cmp = compare::compare(&load(&baseline)?, &candidate, &opts)?;
+    print!("{}", compare::comparison_text(&cmp));
+    write(&json, &serde_json::to_string_pretty(&cmp)?)?;
+    write(&markdown, &compare::comparison_markdown(&cmp))?;
+    let failed = !cmp.regressions().is_empty() || (strict && !cmp.inconclusive().is_empty());
+    Ok(if failed {
+        ExitCode::from(2)
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
 fn write_plots(report: &aether_bench::BenchReport, dir: &std::path::Path) -> Result<()> {
     std::fs::create_dir_all(dir)?;
     let name = report
@@ -672,6 +763,25 @@ fn run() -> Result<ExitCode> {
             order_seed,
             cooldown_ms,
             require_gpu_timestamps,
+        ),
+        Command::Compare {
+            reports,
+            baseline,
+            threshold,
+            metric,
+            allow_mode_mismatch,
+            strict,
+            json,
+            markdown,
+        } => cmd_compare(
+            reports,
+            baseline,
+            threshold,
+            metric,
+            allow_mode_mismatch,
+            strict,
+            json,
+            markdown,
         ),
         Command::Viewer { common } => {
             aether_viewer::run(common.single()?)?;

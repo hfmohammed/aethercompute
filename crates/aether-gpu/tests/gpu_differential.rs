@@ -347,7 +347,7 @@ fn offscreen_render_produces_pixels() {
 fn timed(ctx: &Arc<GpuContext>, c: &ExperimentConfig, steps: u32) -> GpuWorkload {
     let mut c = c.clone();
     c.backend = BackendKind::Gpu;
-    let mut w = GpuWorkload::new(ctx.clone(), c).unwrap();
+    let mut w = GpuWorkload::with_timestamps(ctx.clone(), c).unwrap();
     w.step(steps).unwrap();
     w.sync().unwrap();
     w
@@ -356,7 +356,12 @@ fn timed(ctx: &Arc<GpuContext>, c: &ExperimentConfig, steps: u32) -> GpuWorkload
 #[test]
 fn device_timestamps_are_positive_finite_in_both_pass_modes() {
     let ctx = gpu_or_skip!();
-    let info = GpuWorkload::new(ctx.clone(), cfg(WorkloadKind::Heat, 64, 1))
+    let plain = GpuWorkload::new(ctx.clone(), cfg(WorkloadKind::Heat, 64, 1)).unwrap();
+    assert!(
+        !plain.device_timing_info().available,
+        "viewer path has no timer"
+    );
+    let info = GpuWorkload::with_timestamps(ctx.clone(), cfg(WorkloadKind::Heat, 64, 1))
         .unwrap()
         .device_timing_info();
     assert_eq!(info.available, ctx.timestamps);
@@ -397,7 +402,7 @@ fn device_time_scales_with_batch_size() {
 #[test]
 fn zero_steps_leaves_no_device_time_and_cpu_has_none() {
     let ctx = gpu_or_skip!();
-    let mut w = GpuWorkload::new(ctx, cfg(WorkloadKind::Heat, 32, 0)).unwrap();
+    let mut w = GpuWorkload::with_timestamps(ctx, cfg(WorkloadKind::Heat, 32, 0)).unwrap();
     w.step(0).unwrap();
     assert_eq!(w.take_device_time_ms().unwrap(), None);
     let mut cpu = CpuWorkload::new(cfg(WorkloadKind::Heat, 32, 3)).unwrap();

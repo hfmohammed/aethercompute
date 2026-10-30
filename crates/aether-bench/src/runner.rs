@@ -31,7 +31,10 @@ pub fn create_workload(
         BackendKind::Scalar | BackendKind::Rayon => Ok(Box::new(CpuWorkload::new(cfg.clone())?)),
         BackendKind::Gpu => {
             let ctx = gpu.ok_or_else(|| WorkloadError::Gpu("no GPU context available".into()))?;
-            Ok(Box::new(GpuWorkload::new(ctx.clone(), cfg.clone())?))
+            Ok(Box::new(GpuWorkload::with_timestamps(
+                ctx.clone(),
+                cfg.clone(),
+            )?))
         }
     }
 }
@@ -167,9 +170,18 @@ fn bench_one_inner(
         w.sync()?;
         let compute = ms(t);
         // Resolved outside the host timers above and below.
-        if let Some(d) = w.take_device_time_ms()? {
-            samples.device_compute_ms.push(d);
-            samples.host_device_gap_ms.push(compute - d);
+        match w.take_device_time_ms()? {
+            Some(d) => {
+                samples.device_compute_ms.push(d);
+                samples.host_device_gap_ms.push(compute - d);
+            }
+            // Timestamps are advertised, so every timed batch must produce one.
+            None if device_timing.available => {
+                return Err(WorkloadError::Gpu(
+                    "timestamps available but a timed step produced no device sample".into(),
+                ))
+            }
+            None => {}
         }
         let t = Instant::now();
         let snap = w.snapshot()?;

@@ -113,6 +113,44 @@ Throughput is `updates_per_step * steps / median_compute_seconds`, in millions
 of particle-updates or cell-updates per second. N-body and local-particle
 throughputs are not comparable with each other (O(N^2) vs O(N) work per update).
 
+## Aggregating and comparing runs: `aether compare`
+
+One report is one *run*; runs are the replicates. Never pool samples across
+runs: samples inside a run are autocorrelated, so the run is the unit.
+
+```bash
+# three runs with different order seeds (the default seed is random per run)
+for i in 1 2 3; do aether bench ... --order-seed $i -o results/run$i.json; done
+
+# aggregate: median of per-run medians, min/max spread, per-run values
+aether compare results/run1.json results/run2.json results/run3.json --markdown table.md
+
+# compare candidate runs with baseline runs; exit code 2 on regression
+aether compare cand1.json cand2.json cand3.json \
+    --baseline base1.json base2.json base3.json --threshold 0.10 --metric compute
+```
+
+* Records are aligned by workload, size, backend, GPU workgroup and pass mode,
+  steps, and every numerical parameter (seed, dt, softening, force scale,
+  damping, boundary, diffusion number, alpha). Records with no counterpart are
+  reported and skipped; if nothing aligns the command fails.
+* Only successful, validated records are used. Failed, skipped and invalid
+  records are excluded (and counted in a warning).
+* `--metric` picks one series: `compute` (host wall-clock), `device` (GPU
+  timestamps), `gap`, `readback` or `end-to-end`. They are never merged.
+* A **regression** needs the candidate median-of-medians to exceed the baseline
+  by more than `--threshold` *and* every candidate run to be slower than every
+  baseline run. Beyond the threshold with overlapping runs, or with fewer than
+  two runs per side, is **inconclusive** (exit 2 only with `--strict`).
+* Reset and continuous reports, and legacy schema-v1 reports (continuous), are
+  refused unless `--allow-mode-mismatch` is given.
+* Warnings: dirty working trees, non-release builds, battery power, differing
+  chip / OS / rustc / adapter / commit between runs, reused order seeds, and a
+  config present in only some runs.
+* Outputs: terminal table, `--json` (full result including per-run values) and
+  `--markdown` (a PR-ready comparison table, or in aggregate mode README-style
+  tables of per-run speed-up ratios with min-max ranges).
+
 ## Reproducing
 
 ```bash

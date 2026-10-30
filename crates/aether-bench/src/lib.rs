@@ -1,6 +1,7 @@
 //! Experiment harness: workload factory, benchmark runner, machine metadata
 //! and JSON/CSV/SVG export.
 
+pub mod compare;
 pub mod export;
 pub mod machine;
 pub mod plot;
