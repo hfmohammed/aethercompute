@@ -137,7 +137,7 @@ impl App {
             if self.paused { " [paused]" } else { "" },
             self.total_steps,
             self.step_ms
-                .map(|m| format!("| {m:.3} ms/step"))
+                .map(|m| format!("| {m:.2} ms 1-step latency"))
                 .unwrap_or_default(),
         )
     }
