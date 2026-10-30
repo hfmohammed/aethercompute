@@ -229,12 +229,28 @@ impl ExperimentConfig {
                     return bad("dt must be finite and > 0");
                 }
             }
+            if let Some(f) = self.force_scale {
+                if !f.is_finite() {
+                    return bad("force_scale must be finite");
+                }
+            }
+            // Drag multiplies velocity by `1 - damping*dt`; a negative factor
+            // flips and amplifies velocity every step.
+            let p = self.particle_params();
+            if !(p.dt.is_finite() && p.damping * p.dt < 1.0) {
+                return bad(
+                    "damping*dt must be < 1 (drag factor 1 - damping*dt would be negative)",
+                );
+            }
         } else {
             if self.grid < 3 {
                 return bad("grid must be >= 3");
             }
             if self.grid > 16_384 {
                 return bad("grid exceeds the 16384 safety cap");
+            }
+            if !(self.alpha > 0.0 && self.alpha.is_finite()) {
+                return bad("alpha must be finite and > 0");
             }
             HeatParams::from_config(self)?;
         }
@@ -243,6 +259,33 @@ impl ExperimentConfig {
         }
         if !(self.damping >= 0.0 && self.damping.is_finite()) {
             return bad("damping must be finite and >= 0");
+        }
+        Ok(())
+    }
+
+    /// Estimated peak memory in bytes for one backend instance: the state
+    /// buffers (ping-pong) plus the host-side copy used for readback.
+    pub fn estimated_bytes(&self) -> u64 {
+        let (state, copies) = if self.workload.is_particles() {
+            (std::mem::size_of::<crate::particles::Particle>() as u64, 3)
+        } else {
+            (4, 3)
+        };
+        self.updates_per_step() * state * copies
+    }
+
+    /// Reject configurations whose estimated footprint exceeds `budget_bytes`
+    /// (pass a fraction of physical RAM). A budget of 0 means "unknown" and
+    /// skips the check.
+    pub fn check_memory(&self, budget_bytes: u64) -> Result<(), ConfigError> {
+        let need = self.estimated_bytes();
+        if budget_bytes > 0 && need > budget_bytes {
+            return Err(ConfigError::Invalid(format!(
+                "{} needs ~{:.1} GiB but the budget is {:.1} GiB",
+                self.size_label(),
+                need as f64 / (1u64 << 30) as f64,
+                budget_bytes as f64 / (1u64 << 30) as f64
+            )));
         }
         Ok(())
     }
@@ -316,6 +359,58 @@ mod tests {
             ..Default::default()
         };
         assert!(matches!(c.validate(), Err(ConfigError::Unstable { .. })));
+    }
+
+    #[test]
+    fn rejects_nonfinite_and_degenerate_floats() {
+        let base = ExperimentConfig::default();
+        let bad_cfgs = [
+            ExperimentConfig {
+                force_scale: Some(f32::NAN),
+                ..base.clone()
+            },
+            ExperimentConfig {
+                force_scale: Some(f32::INFINITY),
+                ..base.clone()
+            },
+            ExperimentConfig {
+                damping: 1000.0,
+                ..base.clone()
+            },
+            ExperimentConfig {
+                damping: f32::NAN,
+                ..base.clone()
+            },
+            ExperimentConfig {
+                workload: WorkloadKind::Heat,
+                alpha: 0.0,
+                ..base.clone()
+            },
+            ExperimentConfig {
+                workload: WorkloadKind::Heat,
+                alpha: f32::NAN,
+                ..base.clone()
+            },
+            ExperimentConfig {
+                workload: WorkloadKind::Heat,
+                alpha: -1.0,
+                ..base.clone()
+            },
+        ];
+        for c in bad_cfgs {
+            assert!(c.validate().is_err(), "{c:?}");
+        }
+    }
+
+    #[test]
+    fn memory_budget_is_enforced() {
+        let c = ExperimentConfig {
+            count: 10_000_000,
+            ..Default::default()
+        };
+        assert!(c.check_memory(512 << 20).is_err());
+        assert!(c.check_memory(64 << 30).is_ok());
+        assert!(c.check_memory(0).is_ok());
     }
 
     #[test]

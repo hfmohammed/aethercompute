@@ -8,5 +8,5 @@ pub mod record;
 pub mod runner;
 
 pub use machine::MachineInfo;
-pub use record::{BenchRecord, BenchReport, ColdStart, Samples, Speedup, TimingScope};
+pub use record::{BenchMode, BenchRecord, BenchReport, ColdStart, Samples, Speedup, TimingScope};
 pub use runner::{create_workload, run_sweep, BenchError, SweepSpec};

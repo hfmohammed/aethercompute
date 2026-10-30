@@ -300,7 +300,7 @@ mod tests {
                 base,
                 backends: BackendKind::ALL.to_vec(),
                 sizes: vec![16, 24],
-                workgroups: vec![],
+                ..Default::default()
             },
             &mut |_| {},
         )

@@ -1,0 +1,27 @@
+name: GPU (self-hosted Apple Silicon)
+
+# Hosted runners expose no usable GPU, so the 21 GPU differential tests skip
+# there. This workflow runs them for real on a self-hosted Apple Silicon
+# runner (labels: self-hosted, macOS, ARM64) and fails if no adapter exists.
+# Trigger it manually or add a `schedule:` once a runner is registered.
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gpu:
+    runs-on: [self-hosted, macOS, ARM64]
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo build --release -p aether-cli
+      - run: ./target/release/aether info --require-gpu
+      - run: cargo test --workspace --release
+      - name: validate every workload on the GPU
+        run: |
+          for w in particles-local nbody-allpairs heat; do
+            ./target/release/aether validate --workload $w --backend gpu --require-gpu
+          done
+      - name: short benchmark (fails on validation error)
+        run: ./target/release/aether bench -w heat --size 256 --steps 100 --backend all --require-gpu

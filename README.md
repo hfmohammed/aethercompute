@@ -82,6 +82,14 @@ runs, per sample of 200 steps (20 for N-body). "GPU" is the best of workgroup si
 all three are in the CSV/JSON (they differ by < ~10% except where noted). Raw samples, p95/p99, confidence
 intervals and cold-start times: [results/](results). Charts: [docs/img/](docs/img).
 
+> **Methodology note.** These tables were produced by schema-v1 reports (`bench_mode: continuous`): one simulation
+> kept evolving across warm-up and all samples, so later samples start from a different state (e.g. the heat
+> field converges). The harness now defaults to `--bench-mode reset` (identical work every sample, shuffled
+> backend order, bootstrap median CIs; see [docs/benchmarking.md](docs/benchmarking.md)). A reset-mode rerun
+> on battery power with a dirty tree gave materially lower GPU speed-ups (e.g. heat 1024² ~11x vs scalar,
+> not 31x) and noisy samples, so it is **not published here**. Treat the speed-ups below as upper-end,
+> continuous-mode figures until a clean AC-power reset-mode rerun replaces them (`./scripts/bench.sh`).
+
 ### Particles, local update (O(N)), 200 steps/sample
 
 | size | scalar (ms) | Rayon (ms) | GPU (ms, best wg) | GPU vs scalar | GPU vs Rayon | GPU vs Rayon end-to-end | GPU M updates/s | max abs err (GPU vs CPU) |

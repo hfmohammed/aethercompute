@@ -3,7 +3,9 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use aether_bench::{create_workload, export, machine::MachineInfo, plot, run_sweep, SweepSpec};
+use aether_bench::{
+    create_workload, export, machine::MachineInfo, plot, run_sweep, BenchMode, SweepSpec,
+};
 use aether_core::{
     validate::Tolerance, BackendKind, BoundaryMode, ExperimentConfig, Workload, WorkloadKind,
 };
@@ -75,6 +77,19 @@ enum Command {
         /// Treat a missing GPU as a failure.
         #[arg(long)]
         require_gpu: bool,
+        /// `reset` (default): re-initialise before every sample so each does
+        /// identical work; `continuous`: keep evolving one simulation.
+        #[arg(long, default_value = "reset")]
+        bench_mode: BenchMode,
+        /// Run backends/workgroups in a fixed order instead of shuffling.
+        #[arg(long)]
+        no_shuffle: bool,
+        /// Seed for the execution-order shuffle (recorded in the report).
+        #[arg(long, default_value_t = 1)]
+        order_seed: u64,
+        /// Idle milliseconds before each run (thermal recovery).
+        #[arg(long, default_value_t = 0)]
+        cooldown_ms: u64,
     },
     /// Open the interactive viewer (GPU).
     Viewer {
@@ -416,6 +431,10 @@ fn cmd_bench(
     csv: Option<PathBuf>,
     plot_dir: Option<PathBuf>,
     require_gpu_flag: bool,
+    bench_mode: BenchMode,
+    no_shuffle: bool,
+    order_seed: u64,
+    cooldown_ms: u64,
 ) -> Result<ExitCode> {
     let mut base = common.base()?;
     if let Some(w) = warmup {
@@ -439,6 +458,11 @@ fn cmd_bench(
         backends,
         sizes,
         workgroups,
+        mode: bench_mode,
+        shuffle: !no_shuffle,
+        order_seed,
+        cooldown_ms,
+        command: std::env::args().collect::<Vec<_>>().join(" "),
     };
     let report = run_sweep(&spec, &mut |m| eprintln!("{m}"))?;
 
@@ -530,10 +554,7 @@ fn print_summary(r: &aether_bench::BenchReport) {
                 e.median,
                 rec.median_mupdates_per_s.unwrap_or(0.0),
                 rec.median_step_ms.unwrap_or(0.0),
-                match &rec.validation {
-                    Some(v) if v.passed => "PASS",
-                    _ => "FAIL",
-                }
+                if rec.validated_ok() { "PASS" } else { "FAIL" }
             ),
             _ => println!(
                 "{:<16} {:>10} {:<8} {:>5} skipped: {}",
@@ -605,6 +626,10 @@ fn run() -> Result<ExitCode> {
             csv,
             plot_dir,
             require_gpu,
+            bench_mode,
+            no_shuffle,
+            order_seed,
+            cooldown_ms,
         } => cmd_bench(
             common,
             backend,
@@ -615,6 +640,10 @@ fn run() -> Result<ExitCode> {
             csv,
             plot_dir,
             require_gpu,
+            bench_mode,
+            no_shuffle,
+            order_seed,
+            cooldown_ms,
         ),
         Command::Viewer { common } => {
             aether_viewer::run(common.single()?)?;

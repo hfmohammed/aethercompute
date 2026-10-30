@@ -7,6 +7,8 @@ use aether_core::{
 };
 use aether_cpu::CpuWorkload;
 use aether_gpu::{GpuContext, GpuWorkload};
+use rand::seq::SliceRandom;
+use rand::SeedableRng;
 use thiserror::Error;
 
 use crate::machine::{git_state, MachineInfo};
@@ -42,7 +44,35 @@ pub struct SweepSpec {
     pub sizes: Vec<u32>,
     /// GPU workgroup sizes to sweep; empty = the base config's.
     pub workgroups: Vec<u32>,
+    pub mode: BenchMode,
+    /// Randomise backend/workgroup execution order within each size, so
+    /// thermal state does not systematically favour one backend.
+    pub shuffle: bool,
+    pub order_seed: u64,
+    /// Idle time between runs.
+    pub cooldown_ms: u64,
+    /// Command line to record in the report.
+    pub command: String,
 }
+
+impl Default for SweepSpec {
+    fn default() -> Self {
+        Self {
+            base: ExperimentConfig::default(),
+            backends: BackendKind::ALL.to_vec(),
+            sizes: vec![],
+            workgroups: vec![],
+            mode: BenchMode::default(),
+            shuffle: true,
+            order_seed: 1,
+            cooldown_ms: 0,
+            command: String::new(),
+        }
+    }
+}
+
+/// Fraction of physical RAM a single run may be estimated to use.
+const RAM_BUDGET_FRACTION: f64 = 0.6;
 
 fn ms(t: Instant) -> f64 {
     t.elapsed().as_secs_f64() * 1e3
@@ -71,8 +101,9 @@ fn bench_one(
     cfg: &ExperimentConfig,
     gpu: Option<&Arc<GpuContext>>,
     reference: &Snapshot,
+    mode: BenchMode,
 ) -> BenchRecord {
-    match bench_one_inner(cfg, gpu, reference) {
+    match bench_one_inner(cfg, gpu, reference, mode) {
         Ok(r) => r,
         Err(e) => BenchRecord::failed(cfg.clone(), cfg.backend.as_str().to_string(), e.to_string()),
     }
@@ -82,6 +113,7 @@ fn bench_one_inner(
     cfg: &ExperimentConfig,
     gpu: Option<&Arc<GpuContext>>,
     reference: &Snapshot,
+    mode: BenchMode,
 ) -> Result<BenchRecord, WorkloadError> {
     // Cold start: construction (upload + pipeline compile) and first run.
     let t = Instant::now();
@@ -99,13 +131,24 @@ fn bench_one_inner(
     };
     let validation = w.validate(reference, tol)?;
 
+    // Continuous mode restarts from the initial state once, then evolves.
+    if mode == BenchMode::Continuous {
+        w.initialize()?;
+        w.sync()?;
+    }
     for _ in 0..cfg.warmup {
         w.step(cfg.steps)?;
         w.sync()?;
     }
 
     let mut samples = Samples::default();
+    let mut last_snap = None;
     for _ in 0..cfg.repeats {
+        if mode == BenchMode::ResetEachSample {
+            // Untimed: every sample does identical work from identical state.
+            w.initialize()?;
+            w.sync()?;
+        }
         let t = Instant::now();
         w.step(cfg.steps)?;
         w.sync()?;
@@ -114,10 +157,24 @@ fn bench_one_inner(
         let snap = w.snapshot()?;
         let readback = ms(t);
         std::hint::black_box(&snap);
+        last_snap = Some(snap);
         samples.compute_ms.push(compute);
         samples.readback_ms.push(readback);
         samples.end_to_end_ms.push(compute + readback);
     }
+
+    // Check the state that was actually measured, not just the cold run.
+    let (final_validation, final_nonfinite) = match &last_snap {
+        Some(snap) => {
+            let nonfinite = snap.to_f32().iter().filter(|v| !v.is_finite()).count();
+            let fv = match mode {
+                BenchMode::ResetEachSample => Some(snap.compare(reference, tol)?),
+                BenchMode::Continuous => None,
+            };
+            (fv, Some(nonfinite))
+        }
+        None => (None, None),
+    };
 
     let compute = Summary::from_samples(&samples.compute_ms);
     let median_step_ms = compute.as_ref().map(|s| s.median / cfg.steps.max(1) as f64);
@@ -139,6 +196,9 @@ fn bench_one_inner(
         median_step_ms,
         median_mupdates_per_s,
         validation: Some(validation),
+        final_validation,
+        final_nonfinite,
+        run_index: 0,
         error: None,
     })
 }
@@ -202,6 +262,11 @@ pub fn run_sweep(
     if spec.base.repeats < 1 {
         return Err(BenchError::Config("repeats must be >= 1".into()));
     }
+    if spec.base.steps < 1 {
+        return Err(BenchError::Config(
+            "steps must be >= 1 for a benchmark".into(),
+        ));
+    }
     let mut gpu_error = None;
     let gpu = if spec.backends.contains(&BackendKind::Gpu) {
         match GpuContext::new() {
@@ -231,10 +296,16 @@ pub fn run_sweep(
         spec.workgroups.clone()
     };
 
-    let mut records = Vec::new();
+    let machine = MachineInfo::detect();
+    let ram_budget = (machine.ram_bytes as f64 * RAM_BUDGET_FRACTION) as u64;
+    let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(spec.order_seed);
+    let mut run_order = Vec::new();
+    let mut records: Vec<(usize, BenchRecord)> = Vec::new();
     for &size in &sizes {
         let cfg = with_size(&spec.base, size);
         cfg.validate()
+            .map_err(|e| BenchError::Config(e.to_string()))?;
+        cfg.check_memory(ram_budget)
             .map_err(|e| BenchError::Config(e.to_string()))?;
         progress(&format!(
             "[{}] {}: computing scalar reference",
@@ -242,52 +313,92 @@ pub fn run_sweep(
             cfg.size_label()
         ));
         let reference = reference_run(&cfg)?;
+
+        // Canonical order is the report order; execution order may differ.
+        let mut jobs: Vec<(BackendKind, u32)> = Vec::new();
         for &backend in &spec.backends {
             let wgs: &[u32] = if backend == BackendKind::Gpu {
                 &workgroups
             } else {
                 &workgroups[..1]
             };
-            for &wg in wgs {
-                let mut c = cfg.clone();
-                c.backend = backend;
-                c.workgroup_size = wg;
-                let label = if backend == BackendKind::Gpu {
-                    format!("{} wg={wg}", backend.as_str())
-                } else {
-                    backend.as_str().to_string()
-                };
-                progress(&format!(
-                    "[{}] {}: {label}",
-                    c.workload.as_str(),
-                    c.size_label()
-                ));
-                let rec = if backend == BackendKind::Gpu && gpu.is_none() {
-                    BenchRecord::failed(
-                        c,
-                        "gpu (unavailable)".into(),
-                        gpu_error.clone().unwrap_or_else(|| "no GPU".into()),
-                    )
-                } else {
-                    bench_one(&c, gpu.as_ref(), &reference)
-                };
-                if let Some(m) = rec.median_step_ms {
-                    progress(&format!(
-                        "    median {m:.4} ms/step, {:.1} M updates/s, validation {}",
-                        rec.median_mupdates_per_s.unwrap_or(0.0),
-                        match &rec.validation {
-                            Some(v) if v.passed => "PASS".to_string(),
-                            Some(v) => format!("FAIL (max_abs {:.3e})", v.max_abs),
-                            None => "n/a".into(),
-                        }
-                    ));
-                } else if let Some(e) = &rec.error {
-                    progress(&format!("    skipped: {e}"));
-                }
-                records.push(rec);
+            jobs.extend(wgs.iter().map(|&wg| (backend, wg)));
+        }
+        let canonical: Vec<(BackendKind, u32)> = jobs.clone();
+        if spec.shuffle {
+            jobs.shuffle(&mut rng);
+        }
+        for (backend, wg) in jobs {
+            let mut c = cfg.clone();
+            c.backend = backend;
+            c.workgroup_size = wg;
+            let label = if backend == BackendKind::Gpu {
+                format!("{} wg={wg}", backend.as_str())
+            } else {
+                backend.as_str().to_string()
+            };
+            progress(&format!(
+                "[{}] {}: {label}",
+                c.workload.as_str(),
+                c.size_label()
+            ));
+            if spec.cooldown_ms > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(spec.cooldown_ms));
             }
+            let mut rec = if backend == BackendKind::Gpu && gpu.is_none() {
+                BenchRecord::failed(
+                    c,
+                    "gpu (unavailable)".into(),
+                    gpu_error.clone().unwrap_or_else(|| "no GPU".into()),
+                )
+            } else {
+                bench_one(&c, gpu.as_ref(), &reference, spec.mode)
+            };
+            rec.run_index = run_order.len();
+            run_order.push(format!(
+                "{} {} {label}",
+                rec.config.workload.as_str(),
+                rec.config.size_label()
+            ));
+            if let Some(m) = rec.median_step_ms {
+                let drift = rec.compute.as_ref().map_or(1.0, |s| s.order_drift);
+                progress(&format!(
+                    "    median {m:.4} ms/step, {:.1} M updates/s, validation {}{}",
+                    rec.median_mupdates_per_s.unwrap_or(0.0),
+                    match &rec.validation {
+                        Some(v) if v.passed => "PASS".to_string(),
+                        Some(v) => format!("FAIL (max_abs {:.3e})", v.max_abs),
+                        None => "n/a".into(),
+                    },
+                    if (drift - 1.0).abs() > 0.1 {
+                        format!(", WARNING sample drift x{drift:.2}")
+                    } else {
+                        String::new()
+                    }
+                ));
+            } else if let Some(e) = &rec.error {
+                progress(&format!("    skipped: {e}"));
+            }
+            let pos = canonical
+                .iter()
+                .position(|&j| j == (backend, wg))
+                .unwrap_or(0);
+            records.push((pos, rec));
         }
     }
+    // Restore canonical (size, backend, workgroup) order for stable reports.
+    // The sort is stable and sizes were appended in order, so sorting by the
+    // per-size canonical position needs the size index too.
+    let size_index = |r: &BenchRecord| {
+        let sz = if r.config.workload.is_particles() {
+            r.config.count
+        } else {
+            r.config.grid
+        };
+        sizes.iter().position(|&x| x == sz).unwrap_or(0)
+    };
+    records.sort_by_key(|(pos, r)| (size_index(r), *pos));
+    let records: Vec<BenchRecord> = records.into_iter().map(|(_, r)| r).collect();
 
     let (git_sha, git_dirty) = git_state();
     let speedups = speedups(&records);
@@ -299,9 +410,15 @@ pub fn run_sweep(
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0),
-        machine: MachineInfo::detect(),
+        machine,
         adapter: gpu.as_ref().map(|g| g.report.clone()),
         timing_scope: TimingScope::default(),
+        command: spec.command.clone(),
+        bench_mode: spec.mode,
+        shuffled: spec.shuffle,
+        order_seed: spec.order_seed,
+        cooldown_ms: spec.cooldown_ms,
+        run_order,
         records,
         speedups,
     })
@@ -327,8 +444,7 @@ mod tests {
         SweepSpec {
             base: quick(workload),
             backends: backends.to_vec(),
-            sizes: vec![],
-            workgroups: vec![],
+            ..Default::default()
         }
     }
 
@@ -384,6 +500,9 @@ mod tests {
         let mut s = spec(WorkloadKind::Heat, &[BackendKind::Scalar]);
         s.base.repeats = 0;
         assert!(run_sweep(&s, &mut |_| {}).is_err());
+        let mut s = spec(WorkloadKind::Heat, &[BackendKind::Scalar]);
+        s.base.steps = 0;
+        assert!(run_sweep(&s, &mut |_| {}).is_err());
     }
 
     #[test]
@@ -431,6 +550,67 @@ mod tests {
         .unwrap();
         r.records[0].validation.as_mut().unwrap().passed = false;
         assert_eq!(r.failures(false).len(), 1);
+    }
+
+    #[test]
+    fn modes_both_validate_and_record_provenance() {
+        for mode in [BenchMode::ResetEachSample, BenchMode::Continuous] {
+            let mut s = spec(WorkloadKind::ParticlesLocal, &[BackendKind::Rayon]);
+            s.mode = mode;
+            s.command = "aether bench test".into();
+            let r = run_sweep(&s, &mut |_| {}).unwrap();
+            assert_eq!(r.bench_mode, mode);
+            assert_eq!(r.command, "aether bench test");
+            assert!(r.records[0].validated_ok());
+            assert_eq!(r.records[0].final_nonfinite, Some(0));
+            assert_eq!(
+                r.records[0].final_validation.is_some(),
+                mode == BenchMode::ResetEachSample
+            );
+        }
+    }
+
+    #[test]
+    fn reset_mode_final_state_matches_reference_exactly_on_cpu() {
+        let r = run_sweep(
+            &spec(
+                WorkloadKind::Heat,
+                &[BackendKind::Scalar, BackendKind::Rayon],
+            ),
+            &mut |_| {},
+        )
+        .unwrap();
+        for rec in &r.records {
+            let fv = rec.final_validation.as_ref().unwrap();
+            assert!(fv.passed);
+            assert_eq!(fv.max_abs, 0.0);
+        }
+    }
+
+    #[test]
+    fn shuffle_is_seeded_recorded_and_keeps_report_order() {
+        let mut s = spec(WorkloadKind::Heat, &BackendKind::ALL);
+        s.sizes = vec![16, 24];
+        s.order_seed = 7;
+        let a = run_sweep(&s, &mut |_| {}).unwrap();
+        let b = run_sweep(&s, &mut |_| {}).unwrap();
+        assert_eq!(a.run_order, b.run_order);
+        assert_eq!(a.run_order.len(), 6);
+        // Report order stays (size, backend) regardless of execution order.
+        let order: Vec<_> = a
+            .records
+            .iter()
+            .map(|r| (r.config.grid, r.config.backend))
+            .collect();
+        assert_eq!(order[0], (16, BackendKind::Scalar));
+        assert_eq!(order[3], (24, BackendKind::Scalar));
+        let mut idx: Vec<_> = a.records.iter().map(|r| r.run_index).collect();
+        idx.sort();
+        assert_eq!(idx, vec![0, 1, 2, 3, 4, 5]);
+        s.shuffle = false;
+        let c = run_sweep(&s, &mut |_| {}).unwrap();
+        assert!(!c.shuffled);
+        assert!(c.run_order[0].ends_with("scalar"));
     }
 
     #[test]

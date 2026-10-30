@@ -39,3 +39,22 @@ jobs:
           ./target/release/aether info
           ./target/release/aether validate --workload heat --size 64 --steps 20 --backend rayon
           ./target/release/aether bench -w particles-local --count 1000 --steps 10 --warmup 1 --repeats 3 --backend scalar,rayon
+
+  msrv:
+    name: MSRV (Rust 1.90)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.90
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --locked
+      - run: cargo test --workspace --locked
+
+  audit:
+    name: dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

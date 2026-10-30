@@ -35,6 +35,9 @@ pub fn to_csv(report: &BenchReport) -> Result<String, csv::Error> {
         "compute_min_ms",
         "compute_stddev_ms",
         "compute_ci95_half_ms",
+        "compute_median_ci95_low_ms",
+        "compute_median_ci95_high_ms",
+        "compute_order_drift",
         "readback_median_ms",
         "end_to_end_median_ms",
         "median_step_ms",
@@ -44,6 +47,9 @@ pub fn to_csv(report: &BenchReport) -> Result<String, csv::Error> {
         "max_abs_err",
         "rms_err",
         "validation",
+        "final_state",
+        "bench_mode",
+        "run_index",
         "git_sha",
         "adapter",
         "error",
@@ -70,6 +76,9 @@ pub fn to_csv(report: &BenchReport) -> Result<String, csv::Error> {
             f(c.map(|s| s.min)),
             f(c.map(|s| s.stddev)),
             f(c.map(|s| s.ci95_half)),
+            f(c.map(|s| s.median_ci95_low)),
+            f(c.map(|s| s.median_ci95_high)),
+            f(c.map(|s| s.order_drift)),
             f(r.readback.as_ref().map(|s| s.median)),
             f(r.end_to_end.as_ref().map(|s| s.median)),
             f(r.median_step_ms),
@@ -88,6 +97,22 @@ pub fn to_csv(report: &BenchReport) -> Result<String, csv::Error> {
                 .as_ref()
                 .map(|v| if v.passed { "pass" } else { "FAIL" }.to_string())
                 .unwrap_or_default(),
+            r.final_validation
+                .as_ref()
+                .map(|v| {
+                    if v.passed && r.final_nonfinite == Some(0) {
+                        "pass"
+                    } else {
+                        "FAIL"
+                    }
+                })
+                .or(r
+                    .final_nonfinite
+                    .map(|n| if n == 0 { "finite" } else { "FAIL" }))
+                .unwrap_or_default()
+                .to_string(),
+            report.bench_mode.as_str().to_string(),
+            r.run_index.to_string(),
             report.git_sha.clone(),
             report
                 .adapter
@@ -127,8 +152,7 @@ mod tests {
             &SweepSpec {
                 base,
                 backends: vec![BackendKind::Scalar, BackendKind::Rayon],
-                sizes: vec![],
-                workgroups: vec![],
+                ..Default::default()
             },
             &mut |_| {},
         )

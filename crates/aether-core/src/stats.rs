@@ -13,6 +13,50 @@ pub struct Summary {
     pub stddev: f64,
     /// Half-width of the 95% confidence interval of the mean (Student t).
     pub ci95_half: f64,
+    /// Percentile-bootstrap 95% interval of the median. Unlike the Student-t
+    /// interval it makes no normality assumption, and it is the interval to
+    /// quote for the median.
+    #[serde(default)]
+    pub median_ci95_low: f64,
+    #[serde(default)]
+    pub median_ci95_high: f64,
+    /// Median of the second half of the samples (in run order) divided by the
+    /// median of the first half. Far from 1.0 means the samples drifted
+    /// (thermal throttling, state evolution) and are not independent.
+    #[serde(default = "one")]
+    pub order_drift: f64,
+}
+
+fn one() -> f64 {
+    1.0
+}
+
+const BOOTSTRAP_RESAMPLES: usize = 2000;
+
+/// Percentile bootstrap of the median with a fixed seed, so reports are
+/// reproducible from the raw samples.
+fn bootstrap_median_ci(samples: &[f64]) -> (f64, f64) {
+    use rand::{Rng, SeedableRng};
+    let n = samples.len();
+    let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(0xAE7E5);
+    let mut medians: Vec<f64> = (0..BOOTSTRAP_RESAMPLES)
+        .map(|_| {
+            let mut r: Vec<f64> = (0..n).map(|_| samples[rng.random_range(0..n)]).collect();
+            r.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            percentile_sorted(&r, 0.5)
+        })
+        .collect();
+    medians.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    (
+        percentile_sorted(&medians, 0.025),
+        percentile_sorted(&medians, 0.975),
+    )
+}
+
+fn median_of(v: &[f64]) -> f64 {
+    let mut s = v.to_vec();
+    s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    percentile_sorted(&s, 0.5)
 }
 
 /// Linear-interpolated percentile of an already sorted slice, `q` in [0, 1].
@@ -45,6 +89,18 @@ impl Summary {
         if samples.is_empty() || samples.iter().any(|v| !v.is_finite()) {
             return None;
         }
+        let order_drift = if samples.len() >= 4 {
+            let (a, b) = samples.split_at(samples.len() / 2);
+            let first = median_of(a);
+            if first > 0.0 {
+                median_of(b) / first
+            } else {
+                1.0
+            }
+        } else {
+            1.0
+        };
+        let (median_ci95_low, median_ci95_high) = bootstrap_median_ci(samples);
         let mut s = samples.to_vec();
         s.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let n = s.len();
@@ -70,6 +126,9 @@ impl Summary {
             max: s[n - 1],
             stddev,
             ci95_half,
+            median_ci95_low,
+            median_ci95_high,
+            order_drift,
         })
     }
 }
@@ -121,6 +180,28 @@ mod tests {
         let v: Vec<f64> = (0..50).map(|i| 1.0 + (i % 5) as f64).collect();
         let b = Summary::from_samples(&v).unwrap();
         assert!(b.ci95_half < a.ci95_half);
+    }
+
+    #[test]
+    fn bootstrap_ci_brackets_median_and_is_deterministic() {
+        let v: Vec<f64> = (0..20).map(|i| 10.0 + (i % 7) as f64 * 0.1).collect();
+        let a = Summary::from_samples(&v).unwrap();
+        let b = Summary::from_samples(&v).unwrap();
+        assert_eq!(a, b);
+        assert!(a.median_ci95_low <= a.median && a.median <= a.median_ci95_high);
+    }
+
+    #[test]
+    fn constant_samples_have_degenerate_ci() {
+        let s = Summary::from_samples(&[2.0; 10]).unwrap();
+        assert_eq!((s.median_ci95_low, s.median_ci95_high), (2.0, 2.0));
+        assert_eq!(s.order_drift, 1.0);
+    }
+
+    #[test]
+    fn drift_detects_trend() {
+        let ramp: Vec<f64> = (1..=20).map(|i| i as f64).collect();
+        assert!(Summary::from_samples(&ramp).unwrap().order_drift > 2.0);
     }
 
     #[test]

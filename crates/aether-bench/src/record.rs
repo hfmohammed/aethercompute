@@ -4,7 +4,46 @@ use serde::{Deserialize, Serialize};
 
 use crate::machine::MachineInfo;
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
+
+/// What state each measured sample starts from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BenchMode {
+    /// Re-initialise (untimed) before every sample, so every sample performs
+    /// identical work from the identical state. Reproducible; the default.
+    #[default]
+    ResetEachSample,
+    /// Keep evolving one simulation across warm-up and all samples. Models a
+    /// sustained run, but later samples start from a different state.
+    Continuous,
+}
+
+fn legacy_mode() -> BenchMode {
+    BenchMode::Continuous
+}
+
+impl BenchMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ResetEachSample => "reset-each-sample",
+            Self::Continuous => "continuous",
+        }
+    }
+}
+
+impl std::str::FromStr for BenchMode {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "reset" | "reset-each-sample" => Ok(Self::ResetEachSample),
+            "continuous" => Ok(Self::Continuous),
+            other => Err(format!(
+                "unknown bench mode '{other}' (expected reset or continuous)"
+            )),
+        }
+    }
+}
 
 /// Documents exactly what each timing column covers.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -57,6 +96,16 @@ pub struct BenchRecord {
     pub median_mupdates_per_s: Option<f64>,
     /// Output compared with the scalar CPU reference for the same config.
     pub validation: Option<ErrorReport>,
+    /// Reset mode: the state after the *last measured sample* compared with
+    /// the reference, i.e. validation of what was actually timed.
+    #[serde(default)]
+    pub final_validation: Option<ErrorReport>,
+    /// Number of non-finite values in the final state (all modes).
+    #[serde(default)]
+    pub final_nonfinite: Option<usize>,
+    /// Position of this run in the executed (possibly shuffled) order.
+    #[serde(default)]
+    pub run_index: usize,
     /// Set when the run could not be performed (e.g. no GPU adapter).
     pub error: Option<String>,
 }
@@ -75,12 +124,18 @@ impl BenchRecord {
             median_step_ms: None,
             median_mupdates_per_s: None,
             validation: None,
+            final_validation: None,
+            final_nonfinite: None,
+            run_index: 0,
             error: Some(error),
         }
     }
 
     pub fn validated_ok(&self) -> bool {
-        self.error.is_none() && self.validation.as_ref().is_some_and(|v| v.passed)
+        self.error.is_none()
+            && self.validation.as_ref().is_some_and(|v| v.passed)
+            && self.final_validation.as_ref().is_none_or(|v| v.passed)
+            && self.final_nonfinite.unwrap_or(0) == 0
     }
 }
 
@@ -105,6 +160,22 @@ pub struct BenchReport {
     pub machine: MachineInfo,
     pub adapter: Option<AdapterReport>,
     pub timing_scope: TimingScope,
+    /// Exact command line that produced the report.
+    #[serde(default)]
+    pub command: String,
+    /// Schema-v1 reports predate the modes and always evolved one simulation.
+    #[serde(default = "legacy_mode")]
+    pub bench_mode: BenchMode,
+    /// Whether backend/workgroup order was randomised within each size.
+    #[serde(default)]
+    pub shuffled: bool,
+    #[serde(default)]
+    pub order_seed: u64,
+    #[serde(default)]
+    pub cooldown_ms: u64,
+    /// Labels in the order the runs were executed.
+    #[serde(default)]
+    pub run_order: Vec<String>,
     pub records: Vec<BenchRecord>,
     pub speedups: Vec<Speedup>,
 }
@@ -132,6 +203,16 @@ impl BenchReport {
                     (Some(e), _) => Some(format!("{label}: {e}")),
                     (None, Some(v)) if !v.passed => {
                         Some(format!("{label}: validation FAILED ({v:?})"))
+                    }
+                    (None, Some(_))
+                        if r.final_validation.as_ref().is_some_and(|f| !f.passed)
+                            || r.final_nonfinite.unwrap_or(0) > 0 =>
+                    {
+                        Some(format!(
+                            "{label}: final state invalid ({:?}, {} non-finite)",
+                            r.final_validation,
+                            r.final_nonfinite.unwrap_or(0)
+                        ))
                     }
                     (None, None) => Some(format!("{label}: not validated")),
                     _ => None,

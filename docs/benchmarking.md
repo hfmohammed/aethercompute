@@ -13,14 +13,48 @@ For each (workload, size, backend[, workgroup size]) the harness records:
 | end-to-end  | compute + readback, per sample. State stays resident between samples, so there is no per-sample upload; upload is part of cold start. |
 
 Each measured repeat produces one sample of each. All raw samples are stored in
-the JSON; the summary gives n, min, median, mean, p95, p99, max, stddev and the
-95% confidence half-width of the mean (Student t). Medians are used for
-throughput and speed-up. These are *wall-clock* times measured from the host.
+the JSON; the summary gives n, min, median, mean, p95, p99, max, stddev, the
+95% confidence half-width of the mean (Student t), a **bootstrap 95% interval
+of the median** (2000 resamples, fixed seed) and `order_drift`. Medians are used
+for throughput and speed-up. These are *wall-clock* times measured from the
+host; no GPU timestamp queries are used yet, so "GPU compute" includes
+submission and synchronisation overhead.
+
+Timing samples are not independent (thermal throttling, boost clocks), so the
+Student-t interval understates uncertainty; quote the bootstrap median interval.
+`order_drift` is the median of the second half of the samples (in run order)
+over the median of the first half; the runner prints a warning when it is more
+than 10% from 1.0.
+
+## Sample state: `--bench-mode`
+
+| Mode | Behaviour |
+|------|-----------|
+| `reset` (default) | The workload is re-initialised (untimed) before every sample, so each sample performs identical work from the identical state. After the last sample the state is compared with the scalar reference again (`final_validation`), so what was *timed* is what was validated. |
+| `continuous` | One simulation keeps evolving through warm-up and all samples. Models a sustained run, but later samples start from different states (heat converges, particles disperse). The final state is checked for non-finite values (`final_nonfinite`). |
+
+## Run order and thermal bias
+
+Within each problem size, backends and GPU workgroup sizes run in a **seeded
+random order** (`--order-seed`, default 1; `--no-shuffle` for fixed order), so
+no backend systematically runs on a hot or cold machine. The executed order is
+stored in `run_order` and each record's `run_index`; the report itself stays in
+canonical (size, backend, workgroup) order. `--cooldown-ms N` idles before
+every run. The JSON also stores the exact command line (`command`).
+
+## Config and memory validation
+
+Floating-point inputs (`dt`, `softening`, `force_scale`, `damping`, `alpha`,
+`diffusion_number`) must be finite, `alpha` must be positive, and
+`damping*dt` must stay below 1 (otherwise the drag factor flips sign). A
+benchmark also needs `steps >= 1`. Each size's estimated footprint (state
+buffers plus readback copies) must fit within 60% of physical RAM.
 
 ## Correctness gate
 
 Every record is validated before warm-up: the state after the first `steps`
-steps is compared with a scalar-CPU reference computed from the same seed. GPU
+steps is compared with a scalar-CPU reference computed from the same seed (and,
+in `reset` mode, again after the final sample). GPU
 rows use the tolerances in `numerics.md`; Rayon rows must be bit-identical. A
 fast but incorrect backend is a failed result: `aether bench` exits with code 2
 and the row is marked `FAIL`.

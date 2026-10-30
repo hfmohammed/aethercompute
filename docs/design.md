@@ -90,8 +90,10 @@ host/WGSL layout mismatch.
    set at pipeline creation, so 32/64/128/256 are tuned without editing shaders.
    Pipeline creation runs inside a validation error scope and surfaces as a
    normal `Err` (F09).
-4. `step(n)`: one command encoder, `n` compute passes (alternating bind groups
-   A->B, B->A), a single `queue.submit`. Dispatch is `ceil(items/wg)` workgroups;
+4. `step(n)`: one command encoder, a single `queue.submit`. In the default
+   `batched` pass mode all `n` dispatches share one compute pass (alternating
+   bind groups A->B, B->A; wgpu inserts the storage barriers); `per-step` mode
+   uses one pass per step. Dispatch is `ceil(items/wg)` workgroups;
    counts above the per-dimension limit are folded into a 2D dispatch.
 5. `sync()` blocks until the device is idle. `snapshot()` copies the current
    buffer to staging, maps it, and copies out. Nothing reads back per frame.
